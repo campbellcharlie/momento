@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import chokidar, { FSWatcher } from "chokidar";
 import { stat } from "node:fs/promises";
 import { dirname, basename } from "node:path";
@@ -58,29 +58,29 @@ export interface IndexProgress {
 }
 
 export class Indexer {
-  readonly db: Database.Database;
+  readonly db: DatabaseSync;
   private watcher?: FSWatcher;
   private debounceTimers = new Map<string, NodeJS.Timeout>();
   private indexCache = new Map<string, Map<string, IndexedSessionMeta>>();
 
-  private stmtUpsertSession!: Database.Statement;
-  private stmtSessionMtime!: Database.Statement;
-  private stmtDelSession!: Database.Statement;
-  private stmtDelFts!: Database.Statement;
-  private stmtDelTools!: Database.Statement;
-  private stmtDelTouches!: Database.Statement;
-  private stmtInsFts!: Database.Statement;
-  private stmtInsTool!: Database.Statement;
-  private stmtInsTouch!: Database.Statement;
-  private stmtDelSessFts!: Database.Statement;
-  private stmtInsSessFts!: Database.Statement;
+  private stmtUpsertSession!: StatementSync;
+  private stmtSessionMtime!: StatementSync;
+  private stmtDelSession!: StatementSync;
+  private stmtDelFts!: StatementSync;
+  private stmtDelTools!: StatementSync;
+  private stmtDelTouches!: StatementSync;
+  private stmtInsFts!: StatementSync;
+  private stmtInsTool!: StatementSync;
+  private stmtInsTouch!: StatementSync;
+  private stmtDelSessFts!: StatementSync;
+  private stmtInsSessFts!: StatementSync;
 
   constructor(dbPath: string) {
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("busy_timeout = 5000");
+    this.db = new DatabaseSync(dbPath);
+    this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
-    this.db.pragma("user_version = 1");
+    this.db.exec("PRAGMA user_version = 1");
     this.prepare();
   }
 
@@ -157,7 +157,8 @@ export class Indexer {
     const summary = m.summary ?? null;
     const firstPrompt = cleanFirstPrompt(m.firstPrompt ?? firstUser?.text ?? null);
 
-    const tx = this.db.transaction(() => {
+    this.db.exec("BEGIN");
+    try {
       this.stmtDelFts.run(id);
       this.stmtDelTools.run(id);
       this.stmtDelTouches.run(id);
@@ -177,8 +178,11 @@ export class Indexer {
       for (const msg of parsed.messages) this.stmtInsFts.run(id, msg.role, msg.text);
       for (const tc of parsed.toolCalls) this.stmtInsTool.run(id, tc.toolName, tc.inputJson, tc.timestamp);
       for (const ft of parsed.filesTouched) this.stmtInsTouch.run(id, ft.filePath, ft.operation, ft.timestamp);
-    });
-    tx();
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   watch(rootDir: string): void {
@@ -198,14 +202,18 @@ export class Indexer {
         this.debounceTimers.delete(path);
         if (kind === "remove") {
           const id = basename(path, ".jsonl");
-          const tx = this.db.transaction(() => {
+          this.db.exec("BEGIN");
+          try {
             this.stmtDelFts.run(id);
             this.stmtDelTools.run(id);
             this.stmtDelTouches.run(id);
             this.stmtDelSessFts.run(id);
             this.stmtDelSession.run(id);
-          });
-          tx();
+            this.db.exec("COMMIT");
+          } catch (err) {
+            this.db.exec("ROLLBACK");
+            throw err;
+          }
         } else {
           const projectDir = dirname(path);
           const sessionId = basename(path, ".jsonl");

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { DatabaseSync } from "node:sqlite";
 import { realpathSync } from "node:fs";
 
 function canonicalize(p: string): string {
@@ -51,7 +51,7 @@ function bucketPath(filePath: string): string | null {
   return null;
 }
 
-function attachTopEditedPaths(db: Database.Database, sessions: SessionRow[]): void {
+function attachTopEditedPaths(db: DatabaseSync, sessions: SessionRow[]): void {
   if (sessions.length === 0) return;
   const placeholders = sessions.map(() => "?").join(",");
   const rows = db
@@ -60,7 +60,7 @@ function attachTopEditedPaths(db: Database.Database, sessions: SessionRow[]): vo
        FROM file_touches
        WHERE session_id IN (${placeholders}) AND operation IN ('write','edit')`,
     )
-    .all(...sessions.map((s) => s.id)) as { sessionId: string; filePath: string }[];
+    .all(...sessions.map((s) => s.id)) as unknown as { sessionId: string; filePath: string }[];
   const counts = new Map<string, Map<string, number>>();
   for (const r of rows) {
     const bucket = bucketPath(r.filePath);
@@ -83,7 +83,7 @@ function ftsEscape(q: string): string {
 }
 
 export function search(
-  db: Database.Database,
+  db: DatabaseSync,
   q: string,
   opts: { limit?: number; projectPath?: string } = {},
 ): SearchHit[] {
@@ -101,11 +101,11 @@ export function search(
     ORDER BY score ASC
     LIMIT ?
   `;
-  const params: unknown[] = opts.projectPath ? [fts, opts.projectPath, limit] : [fts, limit];
-  return db.prepare(sql).all(...params) as SearchHit[];
+  const params = (opts.projectPath ? [fts, opts.projectPath, limit] : [fts, limit]) as (string | number)[];
+  return db.prepare(sql).all(...params) as unknown as SearchHit[];
 }
 
-export function getProject(db: Database.Database, projectPath: string): {
+export function getProject(db: DatabaseSync, projectPath: string): {
   sessions: SessionRow[];
   toolCallCount: number;
   fileTouchCount: number;
@@ -116,7 +116,7 @@ export function getProject(db: Database.Database, projectPath: string): {
               created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath
        FROM sessions WHERE project_path = ? ORDER BY modified DESC`,
     )
-    .all(projectPath) as SessionRow[];
+    .all(projectPath) as unknown as SessionRow[];
   const ids = sessions.map((s) => s.id);
   if (ids.length === 0) return { sessions, toolCallCount: 0, fileTouchCount: 0 };
   const placeholders = ids.map(() => "?").join(",");
@@ -131,7 +131,7 @@ export function getProject(db: Database.Database, projectPath: string): {
 }
 
 export function findSimilar(
-  db: Database.Database,
+  db: DatabaseSync,
   description: string,
   limit = 10,
 ): SessionRow[] {
@@ -154,10 +154,10 @@ export function findSimilar(
     ORDER BY r.score ASC
     LIMIT ?
   `;
-  return db.prepare(sql).all(fts, fts, limit) as SessionRow[];
+  return db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
 }
 
-export function getRecent(db: Database.Database, n = 20, projectPath?: string): SessionRow[] {
+export function getRecent(db: DatabaseSync, n = 20, projectPath?: string): SessionRow[] {
   const sql = `
     SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
            created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath
@@ -168,13 +168,13 @@ export function getRecent(db: Database.Database, n = 20, projectPath?: string): 
   `;
   const sessions = (
     projectPath ? db.prepare(sql).all(projectPath, n) : db.prepare(sql).all(n)
-  ) as SessionRow[];
+  ) as unknown as SessionRow[];
   attachTopEditedPaths(db, sessions);
   return sessions;
 }
 
 export function getRecentByEditedPath(
-  db: Database.Database,
+  db: DatabaseSync,
   path: string,
   n = 20,
 ): SessionRow[] {
@@ -195,13 +195,13 @@ export function getRecentByEditedPath(
        ORDER BY s.modified DESC
        LIMIT ?`,
     )
-    .all(like, n) as SessionRow[];
+    .all(like, n) as unknown as SessionRow[];
   attachTopEditedPaths(db, sessions);
   return sessions;
 }
 
 export function filesTouched(
-  db: Database.Database,
+  db: DatabaseSync,
   pattern: string,
 ): { sessionId: string; filePath: string; operation: string; projectPath: string; summary: string | null }[] {
   const like = pattern.includes("%") ? pattern : `%${pattern}%`;
@@ -214,7 +214,7 @@ export function filesTouched(
        ORDER BY ft.timestamp DESC
        LIMIT 100`,
     )
-    .all(like) as {
+    .all(like) as unknown as {
     sessionId: string;
     filePath: string;
     operation: string;

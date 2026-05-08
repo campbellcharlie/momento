@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
@@ -32,8 +32,8 @@ async function main(): Promise<void> {
   }
   if (!prompt) return;
 
-  const db = new Database(DB_PATH, { readonly: true, fileMustExist: true });
-  db.pragma("busy_timeout = 50");
+  const db = new DatabaseSync(DB_PATH, { readOnly: true });
+  db.exec("PRAGMA busy_timeout = 50");
   try {
     const hits = findSimilar(db, prompt, 3);
     if (hits.length === 0) return;

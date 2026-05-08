@@ -14,6 +14,11 @@ Claude was launched.
 
 ## Install
 
+Requires **Node 24+** — uses the built-in `node:sqlite` module (stable in 24,
+experimental and flag-gated in 22). This is intentional: avoids the native-binding
+prebuild headache of `better-sqlite3` and keeps prod dependencies to two
+(`chokidar`, `zod`) for a smaller security-audit surface.
+
 ```sh
 npm install
 npm run build
