@@ -1,0 +1,30 @@
+{
+  "name": "momento-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that indexes and queries Claude Code conversation history at ~/.claude/projects/",
+  "type": "module",
+  "bin": {
+    "momento": "dist/server.js",
+    "momento-inject": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "inject": "node dist/cli.js",
+    "dev": "tsc --watch"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^11.0.0",
+    "chokidar": "^4.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
