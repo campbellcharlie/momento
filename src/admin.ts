@@ -2,7 +2,7 @@ import { rmSync, statSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Indexer } from "./indexer.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type Rule } from "./config.js";
 
 export interface AdminPaths {
   dbDir: string;
@@ -180,4 +180,83 @@ export function runDoctor(paths: AdminPaths = defaultPaths()): number {
   }
   process.stdout.write(`\nall good\n`);
   return 0;
+}
+
+function listRules(label: string, rules: Rule[]): string[] {
+  if (rules.length === 0) return [`${label}: (none)`];
+  const out = [`${label} (${rules.length}):`];
+  const w = Math.max(...rules.map((r) => r.raw.length));
+  for (const r of rules) {
+    out.push(`  ${r.raw.padEnd(w)}  [${r.source}]`);
+  }
+  return out;
+}
+
+function traceRules(rules: Rule[], target: string): { lines: string[]; excluded: boolean } {
+  const lines: string[] = [];
+  let excluded = false;
+  let lastIdx = -1;
+  const w = rules.length ? Math.max(...rules.map((r) => r.raw.length)) : 0;
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i];
+    const hit = r.test(target);
+    if (hit) {
+      excluded = !r.negate;
+      lastIdx = i;
+      lines.push(
+        `  ${r.raw.padEnd(w)}  ${r.negate ? "RE-INCLUDE" : "EXCLUDE   "}  [${r.source}]`,
+      );
+    } else {
+      lines.push(`  ${r.raw.padEnd(w)}  (no match)`);
+    }
+  }
+  if (lastIdx >= 0) {
+    lines.push(`  → ${excluded ? "EXCLUDED" : "re-included"} by rule ${lastIdx + 1}`);
+  } else if (rules.length > 0) {
+    lines.push(`  → no rule matched`);
+  }
+  return { lines, excluded };
+}
+
+// Print which exclusion rules are loaded, where they came from, and (if a
+// path is given) trace the rule chain against it. Returns a process exit code:
+// 0 = no exclusion / no trace target; 1 = trace target would be excluded.
+export function runExplainExclusions(
+  paths: AdminPaths = defaultPaths(),
+  target?: string,
+): number {
+  const cfg = loadConfig({ ignoreFile: paths.ignoreFile });
+  const out: string[] = [];
+  out.push(...listRules("exclude projects", cfg.excludeProjects));
+  out.push("");
+  out.push(...listRules("exclude paths", cfg.excludePaths));
+
+  if (!target) {
+    out.push("");
+    out.push("Pass a path to trace which rules apply, e.g.:");
+    out.push("  momento --explain-exclusions /Users/you/src/secrets/keys.env");
+    process.stdout.write(out.join("\n") + "\n");
+    return 0;
+  }
+
+  out.push("");
+  out.push(`trace for: ${target}`);
+  out.push("");
+  out.push("against project rules:");
+  const proj = traceRules(cfg.excludeProjects, target);
+  out.push(...(proj.lines.length ? proj.lines : ["  (no project rules configured)"]));
+  out.push("");
+  out.push("against path rules:");
+  const path = traceRules(cfg.excludePaths, target);
+  out.push(...(path.lines.length ? path.lines : ["  (no path rules configured)"]));
+  out.push("");
+  const excluded = proj.excluded || path.excluded;
+  out.push(`verdict: ${excluded ? "EXCLUDED" : "indexed"}`);
+  if (cfg.rawProjectPatterns.length || cfg.rawPathPatterns.length) {
+    out.push("");
+    out.push("note: exclusions are applied at index time. After editing them,");
+    out.push("      run `momento --rebuild` to reprocess existing sessions.");
+  }
+  process.stdout.write(out.join("\n") + "\n");
+  return excluded ? 1 : 0;
 }

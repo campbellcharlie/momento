@@ -23,6 +23,7 @@ export interface MomentoConfig {
 export interface Rule {
   raw: string;
   negate: boolean;
+  source: string;
   test: (path: string) => boolean;
 }
 
@@ -108,7 +109,7 @@ function globToRegexSource(pattern: string): string {
 //       * Otherwise, a pattern containing `/` matches anywhere inside the path.
 //       * A pattern with no `/` matches against any single path component
 //         (gitignore "basename" rule).
-export function compileRule(input: string): Rule {
+export function compileRule(input: string, source = "(unknown)"): Rule {
   let raw = input;
   let negate = false;
   if (raw.startsWith("!")) {
@@ -117,7 +118,7 @@ export function compileRule(input: string): Rule {
   }
   if (!GLOB_CHARS.test(raw)) {
     const needle = raw;
-    return { raw: input, negate, test: (p: string) => p.includes(needle) };
+    return { raw: input, negate, source, test: (p: string) => p.includes(needle) };
   }
   const anchored = raw.startsWith("/");
   const hasSlash = raw.includes("/") && !anchored;
@@ -132,7 +133,7 @@ export function compileRule(input: string): Rule {
     // Basename rule: match any single path component.
     re = new RegExp("(^|/)" + globToRegexSource(raw) + "(/|$)");
   }
-  return { raw: input, negate, test: (p: string) => re.test(p) };
+  return { raw: input, negate, source, test: (p: string) => re.test(p) };
 }
 
 // Last matching rule wins, gitignore-style. A negation rule re-includes a path
@@ -155,26 +156,38 @@ export interface LoadConfigOptions {
 export function loadConfig(opts: LoadConfigOptions = {}): MomentoConfig {
   const env = opts.env ?? process.env;
   const ignorePath = opts.ignoreFile ?? join(homedir(), ".momentoignore");
-  const filePatterns = readIgnoreFile(ignorePath);
+  const filePatternsFromIgnore = readIgnoreFile(ignorePath);
 
-  // .momentoignore lines starting with "project:" filter projects; everything
-  // else filters file paths. Keeps a single config file for both axes.
-  const filePatternsRaw = splitEnvList(env.MOMENTO_EXCLUDE_PATHS);
-  const projectPatternsRaw = splitEnvList(env.MOMENTO_EXCLUDE_PROJECTS);
-  for (const p of filePatterns) {
-    if (p.startsWith("project:")) projectPatternsRaw.push(p.slice("project:".length).trim());
-    else filePatternsRaw.push(p);
+  // Track each pattern's source so `--explain-exclusions` can attribute matches.
+  type Sourced = { pattern: string; source: string };
+  const tag = (arr: string[], source: string): Sourced[] =>
+    arr.map((pattern) => ({ pattern, source }));
+
+  const filePatternsRaw: Sourced[] = tag(
+    splitEnvList(env.MOMENTO_EXCLUDE_PATHS),
+    "env:MOMENTO_EXCLUDE_PATHS",
+  );
+  const projectPatternsRaw: Sourced[] = tag(
+    splitEnvList(env.MOMENTO_EXCLUDE_PROJECTS),
+    "env:MOMENTO_EXCLUDE_PROJECTS",
+  );
+  for (const p of filePatternsFromIgnore) {
+    if (p.startsWith("project:")) {
+      projectPatternsRaw.push({ pattern: p.slice("project:".length).trim(), source: ignorePath });
+    } else {
+      filePatternsRaw.push({ pattern: p, source: ignorePath });
+    }
   }
 
-  const projectPatterns = projectPatternsRaw.filter(Boolean);
-  const pathPatterns = filePatternsRaw.filter(Boolean);
+  const projectPatterns = projectPatternsRaw.filter((s) => s.pattern);
+  const pathPatterns = filePatternsRaw.filter((s) => s.pattern);
 
   return {
     indexThinking: envFlag(env.MOMENTO_INDEX_THINKING),
-    excludeProjects: projectPatterns.map(compileRule),
-    excludePaths: pathPatterns.map(compileRule),
-    rawProjectPatterns: projectPatterns,
-    rawPathPatterns: pathPatterns,
+    excludeProjects: projectPatterns.map((s) => compileRule(s.pattern, s.source)),
+    excludePaths: pathPatterns.map((s) => compileRule(s.pattern, s.source)),
+    rawProjectPatterns: projectPatterns.map((s) => s.pattern),
+    rawPathPatterns: pathPatterns.map((s) => s.pattern),
   };
 }
 

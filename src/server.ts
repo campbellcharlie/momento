@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { Indexer } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath } from "./queries.js";
-import { runRebuild, runStatus, runDoctor, defaultPaths } from "./admin.js";
+import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
 
 const HOME = homedir();
 const DB_DIR = join(HOME, ".momento");
@@ -18,16 +18,18 @@ const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
   process.stdout.write(
     [
-      "Usage: momento [--rebuild | --status | --doctor]",
+      "Usage: momento [--rebuild | --status | --doctor | --explain-exclusions [PATH]]",
       "",
-      "  No flags          Run the MCP server over stdio (default).",
-      "  --rebuild         Wipe and re-index all sessions from ~/.claude/projects/.",
-      "  --status          Print index stats (sessions, db size, exclusions in effect).",
-      "  --doctor          Diagnose installation; non-zero exit on warnings/failures.",
+      "  No flags                     Run the MCP server over stdio (default).",
+      "  --rebuild                    Wipe and re-index all sessions from ~/.claude/projects/.",
+      "  --status                     Print index stats (sessions, db size, exclusions in effect).",
+      "  --doctor                     Diagnose installation; non-zero exit on warnings/failures.",
+      "  --explain-exclusions [PATH]  List active exclusion rules. Pass a path to trace which",
+      "                               rule(s) match it; exits 1 if the path would be excluded.",
       "",
       "Env: MOMENTO_INDEX_THINKING=1 to index assistant thinking blocks (off by default).",
-      "     MOMENTO_EXCLUDE_PROJECTS, MOMENTO_EXCLUDE_PATHS — colon/comma-separated substrings.",
-      "     ~/.momentoignore — one pattern per line; prefix with `project:` to filter projects.",
+      "     MOMENTO_EXCLUDE_PROJECTS, MOMENTO_EXCLUDE_PATHS — colon/comma-separated patterns.",
+      "     ~/.momentoignore — one gitignore-style glob per line; prefix with `project:` to filter projects.",
       "",
     ].join("\n"),
   );
@@ -50,6 +52,15 @@ if (argv.includes("--status")) {
 }
 if (argv.includes("--doctor")) {
   process.exit(runDoctor(defaultPaths()));
+}
+{
+  // Allow `--explain-exclusions` with or without a path argument. The path,
+  // if present, is the next non-flag token after the flag itself.
+  const idx = argv.indexOf("--explain-exclusions");
+  if (idx >= 0) {
+    const target = argv.slice(idx + 1).find((a) => !a.startsWith("-"));
+    process.exit(runExplainExclusions(defaultPaths(), target));
+  }
 }
 
 const indexer = new Indexer(DB_PATH);

@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runRebuild, runStatus, runDoctor } from "../dist/admin.js";
+import { runRebuild, runStatus, runDoctor, runExplainExclusions } from "../dist/admin.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, "fixtures");
@@ -123,6 +123,84 @@ test("runDoctor reports clean after rebuild", async () => {
     // Node 22 will still warn about needing the experimental flag, so accept 0 or 1.
     assert.ok(value === 0 || value === 1, `unexpected exit ${value}: ${out}`);
     assert.match(out, /db has 1 sessions/);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+// loadConfig reads process.env directly, so we sandbox the MOMENTO_* vars to
+// keep these tests independent of the surrounding shell.
+function withCleanEnv(fn) {
+  const keys = ["MOMENTO_EXCLUDE_PROJECTS", "MOMENTO_EXCLUDE_PATHS", "MOMENTO_INDEX_THINKING"];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  for (const k of keys) delete process.env[k];
+  try {
+    return fn();
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+test("runExplainExclusions lists rules with no target", () => {
+  const { work, paths } = makePaths();
+  try {
+    writeFileSync(paths.ignoreFile, "**/secrets/**\nproject:*client-*\n");
+    const { value, out } = withCleanEnv(() => captureStdout(() => runExplainExclusions(paths)));
+    assert.equal(value, 0);
+    assert.match(out, /exclude projects \(1\)/);
+    assert.match(out, /\*client-\*/);
+    assert.match(out, /exclude paths \(1\)/);
+    assert.match(out, /\*\*\/secrets\/\*\*/);
+    assert.match(out, /Pass a path to trace/);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("runExplainExclusions traces an excluded path and exits 1", () => {
+  const { work, paths } = makePaths();
+  try {
+    writeFileSync(paths.ignoreFile, "**/secrets/**\n");
+    const { value, out } = withCleanEnv(() =>
+      captureStdout(() => runExplainExclusions(paths, "/Users/me/src/secrets/keys.env")),
+    );
+    assert.equal(value, 1, `expected excluded; got ${value}\n${out}`);
+    assert.match(out, /verdict: EXCLUDED/);
+    assert.match(out, /EXCLUDE/);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("runExplainExclusions honors negation rules and exits 0", () => {
+  const { work, paths } = makePaths();
+  try {
+    writeFileSync(paths.ignoreFile, "**/secrets/**\n!**/secrets/public/**\n");
+    const { value, out } = withCleanEnv(() =>
+      captureStdout(() =>
+        runExplainExclusions(paths, "/Users/me/src/secrets/public/readme.md"),
+      ),
+    );
+    assert.equal(value, 0, `expected re-included; got ${value}\n${out}`);
+    assert.match(out, /RE-INCLUDE/);
+    assert.match(out, /verdict: indexed/);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("runExplainExclusions on a path with no matching rules reports indexed", () => {
+  const { work, paths } = makePaths();
+  try {
+    writeFileSync(paths.ignoreFile, "**/secrets/**\n");
+    const { value, out } = withCleanEnv(() =>
+      captureStdout(() => runExplainExclusions(paths, "/Users/me/src/regular/file.ts")),
+    );
+    assert.equal(value, 0);
+    assert.match(out, /verdict: indexed/);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

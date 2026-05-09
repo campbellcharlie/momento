@@ -172,13 +172,28 @@ project might contain secrets you don't want indexed, exclude it.
 ## Admin commands
 
 ```sh
-momento --status     # session count, db size, exclusions in effect
-momento --doctor     # validate node version, projects root, db readability
-momento --rebuild    # wipe index.db and re-index from ~/.claude/projects/
+momento --status                          # session count, db size, exclusions in effect
+momento --doctor                          # validate node version, projects root, db readability
+momento --rebuild                         # wipe index.db and re-index from ~/.claude/projects/
+momento --explain-exclusions              # list active exclusion rules + their source
+momento --explain-exclusions <path>       # trace which rule(s) match a given path
 momento --help
 ```
 
-`--doctor` exits non-zero on warnings (1) or failures (2) for use in scripts.
+- `--doctor` exits non-zero on warnings (1) or failures (2) for use in scripts.
+- `--explain-exclusions <path>` exits 1 if the path would be excluded, 0 otherwise.
+  Useful for sanity-checking a `.momentoignore` change before running `--rebuild`:
+
+  ```sh
+  momento --explain-exclusions /Users/me/src/secrets/keys.env
+  # ...
+  # against path rules:
+  #   /Users/me/personal     (no match)
+  #   **/secrets/**          EXCLUDE     [/Users/me/.momentoignore]
+  #   !**/secrets/public/**  (no match)
+  #   → EXCLUDED by rule 2
+  # verdict: EXCLUDED
+  ```
 
 ## Troubleshooting
 
