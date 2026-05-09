@@ -16,6 +16,7 @@ export interface SearchHit {
   snippet: string;
   role: string;
   score: number;
+  client: string;
 }
 
 export interface SessionRow {
@@ -28,6 +29,7 @@ export interface SessionRow {
   gitBranch: string | null;
   messageCount: number | null;
   jsonlPath: string;
+  client: string;
   topEditedPaths?: string[];
 }
 
@@ -94,7 +96,8 @@ export function search(
     SELECT m.session_id AS sessionId, s.project_path AS projectPath, s.summary AS summary,
            snippet(messages_fts, 2, '[', ']', '...', 12) AS snippet,
            m.role AS role,
-           bm25(messages_fts) AS score
+           bm25(messages_fts) AS score,
+           s.client AS client
     FROM messages_fts m JOIN sessions s ON s.id = m.session_id
     WHERE messages_fts MATCH ?
       ${opts.projectPath ? "AND s.project_path = ?" : ""}
@@ -113,7 +116,7 @@ export function getProject(db: DatabaseSync, projectPath: string): {
   const sessions = db
     .prepare(
       `SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
-              created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath
+              created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client
        FROM sessions WHERE project_path = ? ORDER BY modified DESC`,
     )
     .all(projectPath) as unknown as SessionRow[];
@@ -152,7 +155,8 @@ export function findByTopic(
     combined AS (SELECT sid, s FROM per_msg UNION ALL SELECT sid, s FROM per_sess),
     ranked AS (SELECT sid, MIN(s) AS score FROM combined GROUP BY sid)
     SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
-           s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount, s.jsonl_path AS jsonlPath
+           s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount, s.jsonl_path AS jsonlPath,
+           s.client AS client
     FROM ranked r JOIN sessions s ON s.id = r.sid
     ORDER BY r.score ASC
     LIMIT ?
@@ -166,7 +170,7 @@ export const findSimilar = findByTopic;
 export function getRecent(db: DatabaseSync, n = 20, projectPath?: string): SessionRow[] {
   const sql = `
     SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
-           created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath
+           created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client
     FROM sessions
     ${projectPath ? "WHERE project_path = ?" : ""}
     ORDER BY modified DESC
@@ -192,7 +196,7 @@ export function getRecentByEditedPath(
     .prepare(
       `SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
               s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount,
-              s.jsonl_path AS jsonlPath
+              s.jsonl_path AS jsonlPath, s.client AS client
        FROM sessions s
        WHERE s.id IN (
          SELECT DISTINCT session_id FROM file_touches

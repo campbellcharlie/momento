@@ -1,0 +1,26 @@
+{
+  "sessionId": "gem-test-001",
+  "projectHash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "startTime": "2026-03-15T08:00:00Z",
+  "lastUpdated": "2026-03-15T08:30:00Z",
+  "messages": [
+    {
+      "id": "m1",
+      "type": "user",
+      "content": "explain webcodecs in 1 sentence",
+      "timestamp": "2026-03-15T08:00:00Z"
+    },
+    {
+      "id": "m2",
+      "type": "info",
+      "content": "system event — tool registry initialized",
+      "timestamp": "2026-03-15T08:00:01Z"
+    },
+    {
+      "id": "m3",
+      "type": "gemini",
+      "content": "WebCodecs is a browser API for low-level encoding and decoding of audio and video frames.",
+      "timestamp": "2026-03-15T08:00:05Z"
+    }
+  ]
+}

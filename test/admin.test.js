@@ -59,6 +59,9 @@ function makePaths() {
       dbPath: join(work, "index.db"),
       projectsRoot,
       ignoreFile: join(work, ".momentoignore"),
+      // Isolate from real ~/.codex / ~/.gemini history during tests.
+      codexRoot: join(work, "no-codex"),
+      geminiRoot: join(work, "no-gemini"),
     },
   };
 }
@@ -105,10 +108,12 @@ test("runDoctor returns non-zero when projects root is missing", () => {
       dbPath: join(work, "index.db"),
       projectsRoot: join(work, "no-such-projects"),
       ignoreFile: join(work, ".momentoignore"),
+      codexRoot: join(work, "no-codex"),
+      geminiRoot: join(work, "no-gemini"),
     };
     const { value, out } = captureStdout(() => runDoctor(paths));
     assert.equal(value, 2, `expected fail exit, got ${value}: ${out}`);
-    assert.match(out, /projects root not found/);
+    assert.match(out, /claude_code root not found/);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

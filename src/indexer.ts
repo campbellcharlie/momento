@@ -1,15 +1,10 @@
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import chokidar, { FSWatcher } from "chokidar";
 import { stat } from "node:fs/promises";
-import { dirname, basename } from "node:path";
-import {
-  iterateSessions,
-  parseSession,
-  readSessionsIndex,
-  cleanFirstPrompt,
-  IndexedSessionMeta,
-} from "./parser.js";
+import { dirname, basename, extname } from "node:path";
+import { cleanFirstPrompt, IndexedSessionMeta } from "./parser.js";
 import { MomentoConfig, loadConfig, projectExcluded } from "./config.js";
+import { ClientName, Source, defaultSources } from "./sources.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -21,7 +16,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   modified TEXT,
   git_branch TEXT,
   message_count INTEGER,
-  jsonl_path TEXT NOT NULL
+  jsonl_path TEXT NOT NULL,
+  client TEXT NOT NULL DEFAULT 'claude_code'
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   session_id UNINDEXED,
@@ -51,6 +47,31 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_name ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_file_touches_path ON file_touches(file_path);
 `;
+// idx_sessions_client lives in migrate() so the index isn't built against a
+// table that pre-dates the `client` column. SCHEMA has to be safe to apply
+// against both fresh DBs and v1 DBs (where `client` doesn't exist yet); any
+// new-column-dependent DDL belongs in a migration step.
+
+// Schema versioning. Bump SCHEMA_VERSION and add a migration block when adding
+// columns/tables. Migrations are idempotent — they read PRAGMA user_version and
+// ALTER only if needed. Existing rows get sane defaults so the DB is queryable
+// before the first reindex.
+const SCHEMA_VERSION = 2;
+
+function migrate(db: DatabaseSync): void {
+  const cur = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  if (cur >= SCHEMA_VERSION) return;
+  if (cur < 2) {
+    // v2: add `client` column. New DBs already have it via SCHEMA above; only
+    // pre-v2 DBs need the ALTER. Probe via PRAGMA table_info to stay idempotent.
+    const cols = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "client")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN client TEXT NOT NULL DEFAULT 'claude_code'");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_client ON sessions(client)");
+  }
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+}
 
 export interface IndexProgress {
   done: number;
@@ -82,15 +103,15 @@ export class Indexer {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
-    this.db.exec("PRAGMA user_version = 1");
+    migrate(this.db);
     this.config = config ?? loadConfig();
     this.prepare();
   }
 
   private prepare(): void {
     this.stmtUpsertSession = this.db.prepare(`
-      INSERT INTO sessions (id, project_path, summary, first_prompt, created, modified, git_branch, message_count, jsonl_path)
-      VALUES (@id, @project_path, @summary, @first_prompt, @created, @modified, @git_branch, @message_count, @jsonl_path)
+      INSERT INTO sessions (id, project_path, summary, first_prompt, created, modified, git_branch, message_count, jsonl_path, client)
+      VALUES (@id, @project_path, @summary, @first_prompt, @created, @modified, @git_branch, @message_count, @jsonl_path, @client)
       ON CONFLICT(id) DO UPDATE SET
         project_path=excluded.project_path,
         summary=excluded.summary,
@@ -99,7 +120,8 @@ export class Indexer {
         modified=excluded.modified,
         git_branch=excluded.git_branch,
         message_count=excluded.message_count,
-        jsonl_path=excluded.jsonl_path
+        jsonl_path=excluded.jsonl_path,
+        client=excluded.client
     `);
     this.stmtSessionMtime = this.db.prepare(`SELECT modified FROM sessions WHERE id = ?`);
     this.stmtDelSession = this.db.prepare(`DELETE FROM sessions WHERE id = ?`);
@@ -121,41 +143,122 @@ export class Indexer {
     );
   }
 
+  // Single-source convenience for the original Claude Code path. Construct a
+  // one-element source list pointing at `rootDir` and delegate.
   async buildAll(rootDir: string, onProgress?: (p: IndexProgress) => void): Promise<void> {
+    const claude = defaultSources().find((s) => s.client === "claude_code");
+    if (!claude) throw new Error("claude_code source missing from defaultSources()");
+    const source: Source = { ...claude, root: rootDir };
+    await this.buildAllSources([source], onProgress);
+  }
+
+  // Multi-client buildAll. Iterates each source's layout and indexSessions
+  // dispatched through the source's parser.
+  async buildAllSources(sources: Source[], onProgress?: (p: IndexProgress) => void): Promise<void> {
     let done = 0;
-    for await (const ref of iterateSessions(rootDir)) {
-      if (projectExcluded(this.config, ref.projectDir)) {
-        done++;
-        onProgress?.({ done, current: ref.jsonlPath });
-        continue;
-      }
-      try {
-        const st = await stat(ref.jsonlPath);
-        const mtimeIso = st.mtime.toISOString();
-        const existing = this.stmtSessionMtime.get(ref.sessionId) as { modified?: string } | undefined;
-        if (existing?.modified && existing.modified >= mtimeIso) {
+    for (const source of sources) {
+      for await (const ref of source.iterate(source.root)) {
+        if (projectExcluded(this.config, ref.projectDir)) {
           done++;
           onProgress?.({ done, current: ref.jsonlPath });
           continue;
         }
-        await this.indexSession(ref.jsonlPath, ref.projectDir, ref.sessionId);
-      } catch (err) {
-        process.stderr.write(`momento: index failed ${ref.jsonlPath}: ${(err as Error).message}\n`);
+        try {
+          const st = await stat(ref.jsonlPath);
+          const mtimeIso = st.mtime.toISOString();
+          const existing = this.stmtSessionMtime.get(ref.sessionId) as { modified?: string } | undefined;
+          if (existing?.modified && existing.modified >= mtimeIso) {
+            done++;
+            onProgress?.({ done, current: ref.jsonlPath });
+            continue;
+          }
+          await this.indexSessionFromSource(ref.jsonlPath, ref.projectDir, ref.sessionId, source);
+        } catch (err) {
+          process.stderr.write(`momento: index failed ${ref.jsonlPath}: ${(err as Error).message}\n`);
+        }
+        done++;
+        onProgress?.({ done, current: ref.jsonlPath });
       }
-      done++;
-      onProgress?.({ done, current: ref.jsonlPath });
     }
   }
 
-  async indexSession(jsonlPath: string, projectDir: string, sessionId: string): Promise<void> {
-    const parsed = await parseSession(jsonlPath, this.config);
+  // Single-source convenience for the original Claude Code watcher.
+  watch(rootDir: string): void {
+    const claude = defaultSources().find((s) => s.client === "claude_code");
+    if (!claude) throw new Error("claude_code source missing from defaultSources()");
+    this.watchSources([{ ...claude, root: rootDir }]);
+  }
+
+  // Multi-client watcher. Each source contributes one chokidar tree; file
+  // events route to the right parser via the `path → source` map.
+  watchSources(sources: Source[]): void {
+    if (this.watcher) return;
+    const sourceByPath = (p: string): Source | null => {
+      for (const s of sources) if (p.startsWith(s.root)) return s;
+      return null;
+    };
+    const roots = sources.map((s) => s.root);
+    const allowedExts = new Set(sources.map((s) => s.fileExt));
+    this.watcher = chokidar.watch(roots, {
+      ignoreInitial: true,
+      ignored: (p, stats) => {
+        if (!stats) return false;
+        if (stats.isDirectory()) return false;
+        return !allowedExts.has(extname(p));
+      },
+    });
+    const schedule = (path: string, kind: "upsert" | "remove") => {
+      const prev = this.debounceTimers.get(path);
+      if (prev) clearTimeout(prev);
+      const t = setTimeout(() => {
+        this.debounceTimers.delete(path);
+        const source = sourceByPath(path);
+        if (!source) return;
+        if (kind === "remove") {
+          const id = basename(path, source.fileExt);
+          this.db.exec("BEGIN");
+          try {
+            this.stmtDelFts.run(id);
+            this.stmtDelTools.run(id);
+            this.stmtDelTouches.run(id);
+            this.stmtDelSessFts.run(id);
+            this.stmtDelSession.run(id);
+            this.db.exec("COMMIT");
+          } catch (err) {
+            this.db.exec("ROLLBACK");
+            throw err;
+          }
+        } else {
+          const projectDir = dirname(path);
+          const sessionId = basename(path, source.fileExt);
+          if (projectExcluded(this.config, projectDir)) return;
+          this.indexCache.delete(projectDir);
+          this.indexSessionFromSource(path, projectDir, sessionId, source).catch((err) =>
+            process.stderr.write(`momento: watch reindex failed ${path}: ${err.message}\n`),
+          );
+        }
+      }, 500);
+      this.debounceTimers.set(path, t);
+    };
+    this.watcher.on("add", (p) => schedule(p, "upsert"));
+    this.watcher.on("change", (p) => schedule(p, "upsert"));
+    this.watcher.on("unlink", (p) => schedule(p, "remove"));
+  }
+
+  // Per-session indexer. Dispatches to the source's parser, merges in metadata
+  // (sidecar for Claude, parser-emitted for Codex/Gemini), and upserts.
+  async indexSessionFromSource(
+    jsonlPath: string,
+    projectDir: string,
+    sessionId: string,
+    source: Source,
+  ): Promise<void> {
+    const parsed = await source.parse(jsonlPath, this.config);
     const id = parsed.sessionId || sessionId;
-    let meta = this.indexCache.get(projectDir);
-    if (!meta) {
-      meta = await readSessionsIndex(projectDir);
-      this.indexCache.set(projectDir, meta);
-    }
-    const m = meta.get(id) ?? {};
+    const sidecarMeta = source.resolveMeta
+      ? await source.resolveMeta(id, projectDir, this.indexCache)
+      : {};
+    const m: IndexedSessionMeta = { ...(parsed.meta ?? {}), ...sidecarMeta };
     const st = await stat(jsonlPath);
     const firstUser = parsed.messages.find((x) => x.role === "user");
     const projectPath = m.projectPath ?? projectDir;
@@ -181,6 +284,7 @@ export class Indexer {
         git_branch: m.gitBranch ?? null,
         message_count: m.messageCount ?? parsed.messages.length,
         jsonl_path: jsonlPath,
+        client: source.client,
       });
       this.stmtInsSessFts.run(id, summary ?? "", firstPrompt ?? "");
       for (const msg of parsed.messages) this.stmtInsFts.run(id, msg.role, msg.text);
@@ -193,50 +297,12 @@ export class Indexer {
     }
   }
 
-  watch(rootDir: string): void {
-    if (this.watcher) return;
-    this.watcher = chokidar.watch(rootDir, {
-      ignoreInitial: true,
-      ignored: (p, stats) => {
-        if (!stats) return false;
-        if (stats.isDirectory()) return false;
-        return !p.endsWith(".jsonl");
-      },
-    });
-    const schedule = (path: string, kind: "upsert" | "remove") => {
-      const prev = this.debounceTimers.get(path);
-      if (prev) clearTimeout(prev);
-      const t = setTimeout(() => {
-        this.debounceTimers.delete(path);
-        if (kind === "remove") {
-          const id = basename(path, ".jsonl");
-          this.db.exec("BEGIN");
-          try {
-            this.stmtDelFts.run(id);
-            this.stmtDelTools.run(id);
-            this.stmtDelTouches.run(id);
-            this.stmtDelSessFts.run(id);
-            this.stmtDelSession.run(id);
-            this.db.exec("COMMIT");
-          } catch (err) {
-            this.db.exec("ROLLBACK");
-            throw err;
-          }
-        } else {
-          const projectDir = dirname(path);
-          const sessionId = basename(path, ".jsonl");
-          if (projectExcluded(this.config, projectDir)) return;
-          this.indexCache.delete(projectDir);
-          this.indexSession(path, projectDir, sessionId).catch((err) =>
-            process.stderr.write(`momento: watch reindex failed ${path}: ${err.message}\n`),
-          );
-        }
-      }, 500);
-      this.debounceTimers.set(path, t);
-    };
-    this.watcher.on("add", (p) => schedule(p, "upsert"));
-    this.watcher.on("change", (p) => schedule(p, "upsert"));
-    this.watcher.on("unlink", (p) => schedule(p, "remove"));
+  // Backward-compatible wrapper for the existing Claude Code-only call path.
+  // Tests still drive this; new code should use indexSessionFromSource.
+  async indexSession(jsonlPath: string, projectDir: string, sessionId: string): Promise<void> {
+    const claude = defaultSources().find((s) => s.client === "claude_code");
+    if (!claude) throw new Error("claude_code source missing from defaultSources()");
+    await this.indexSessionFromSource(jsonlPath, projectDir, sessionId, claude);
   }
 
   close(): void {
@@ -246,3 +312,7 @@ export class Indexer {
     this.db.close();
   }
 }
+
+// Exported so callers can spin up the default 3-source set without importing
+// from sources.ts directly. Keeps server.ts and admin.ts coupled to indexer.ts.
+export { defaultSources, type Source, type ClientName };

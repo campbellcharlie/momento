@@ -1,14 +1,32 @@
 import { rmSync, statSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { Indexer } from "./indexer.js";
+import { dirname, join } from "node:path";
+import { Indexer, defaultSources, type Source } from "./indexer.js";
 import { loadConfig, type Rule } from "./config.js";
+
+// Resolve the source set for admin operations. Each per-client field on
+// `paths` overrides the corresponding default root; missing fields fall back
+// to homedir-based defaults. Tests use this to isolate temp dirs from real
+// CLI history.
+function sourcesFromPaths(paths: AdminPaths): Source[] {
+  return defaultSources(homedir()).map((s) => {
+    if (s.client === "claude_code") return { ...s, root: paths.projectsRoot };
+    if (s.client === "codex" && paths.codexRoot !== undefined) return { ...s, root: paths.codexRoot };
+    if (s.client === "gemini" && paths.geminiRoot !== undefined) return { ...s, root: paths.geminiRoot };
+    return s;
+  });
+}
 
 export interface AdminPaths {
   dbDir: string;
   dbPath: string;
   projectsRoot: string;
   ignoreFile: string;
+  // Optional per-client roots. When undefined, sourcesFromPaths() falls back
+  // to the default homedir-based locations (~/.codex/sessions, ~/.gemini/tmp).
+  // Tests pass nonexistent paths here to isolate real CLI history during runs.
+  codexRoot?: string;
+  geminiRoot?: string;
 }
 
 export function defaultPaths(): AdminPaths {
@@ -18,6 +36,8 @@ export function defaultPaths(): AdminPaths {
     dbPath: join(home, ".momento", "index.db"),
     projectsRoot: join(home, ".claude", "projects"),
     ignoreFile: join(home, ".momentoignore"),
+    codexRoot: join(home, ".codex", "sessions"),
+    geminiRoot: join(home, ".gemini", "tmp"),
   };
 }
 
@@ -43,11 +63,13 @@ export async function runRebuild(paths: AdminPaths = defaultPaths()): Promise<vo
     const p = paths.dbPath + suffix;
     if (existsSync(p)) rmSync(p, { force: true });
   }
-  process.stdout.write(`momento: rebuilding ${paths.dbPath} from ${paths.projectsRoot}\n`);
+  const sources = sourcesFromPaths(paths);
+  const rootSummary = sources.map((s) => `${s.client}: ${s.root}`).join(", ");
+  process.stdout.write(`momento: rebuilding ${paths.dbPath} from ${rootSummary}\n`);
   const cfg = loadConfig({ ignoreFile: paths.ignoreFile });
   const indexer = new Indexer(paths.dbPath, cfg);
   let last = 0;
-  await indexer.buildAll(paths.projectsRoot, ({ done }) => {
+  await indexer.buildAllSources(sources, ({ done }) => {
     if (done - last >= 25) {
       process.stdout.write(`  indexed ${done} sessions\n`);
       last = done;
@@ -76,11 +98,21 @@ export function runStatus(paths: AdminPaths = defaultPaths()): void {
     const oldest = indexer.db
       .prepare(`SELECT modified FROM sessions ORDER BY modified ASC LIMIT 1`)
       .get() as { modified: string } | undefined;
+    const byClient = indexer.db
+      .prepare(`SELECT client, COUNT(*) AS n FROM sessions GROUP BY client ORDER BY client`)
+      .all() as { client: string; n: number }[];
+    const sources = sourcesFromPaths(paths);
     const lines = [
       `momento status`,
       `  db:               ${paths.dbPath} (${fmtBytes(fileSize(paths.dbPath))})`,
-      `  projects root:    ${paths.projectsRoot}`,
-      `  sessions:         ${sessions.n}`,
+      `  sources:`,
+    ];
+    for (const s of sources) {
+      const count = byClient.find((c) => c.client === s.client)?.n ?? 0;
+      lines.push(`    ${s.client.padEnd(12)} ${count.toString().padStart(5)} sessions  ${s.root}`);
+    }
+    lines.push(
+      `  total sessions:   ${sessions.n}`,
       `  messages indexed: ${messages.n}`,
       `  tool calls:       ${tools.n}`,
       `  file touches:     ${touches.n}`,
@@ -89,7 +121,7 @@ export function runStatus(paths: AdminPaths = defaultPaths()): void {
       `  index thinking:   ${cfg.indexThinking ? "yes" : "no (default)"}`,
       `  exclude projects: ${cfg.rawProjectPatterns.length ? cfg.rawProjectPatterns.join(", ") : "(none)"}`,
       `  exclude paths:    ${cfg.rawPathPatterns.length ? cfg.rawPathPatterns.join(", ") : "(none)"}`,
-    ];
+    );
     if (cfg.rawProjectPatterns.length || cfg.rawPathPatterns.length) {
       lines.push(`  note: exclusions only apply to new/changed sessions; run \`momento --rebuild\` after editing them.`);
     }
@@ -122,17 +154,32 @@ export function runDoctor(paths: AdminPaths = defaultPaths()): number {
   else if (nodeMajor === 22) wrn(`node ${process.versions.node} works only with --experimental-sqlite; recommend node 24+`);
   else bad(`node ${process.versions.node} too old; need 22+ (24+ recommended)`);
 
-  // Projects directory existence — momento has nothing to index without it.
-  if (existsSync(paths.projectsRoot)) {
-    try {
-      const st = statSync(paths.projectsRoot);
-      if (st.isDirectory()) ok(`projects root ${paths.projectsRoot}`);
-      else bad(`projects root ${paths.projectsRoot} is not a directory`);
-    } catch (err) {
-      bad(`projects root ${paths.projectsRoot}: ${(err as Error).message}`);
+  // Per-client source roots. Claude Code missing is a hard fail (it's the
+  // historical primary source). Codex/Gemini get nuanced reporting:
+  // - parent dir exists (CLI installed) but sessions root missing → warn
+  // - parent dir also missing (CLI never installed) → silent skip
+  // This keeps doctor quiet for single-CLI users without hiding real problems.
+  const sources = sourcesFromPaths(paths);
+  for (const s of sources) {
+    if (existsSync(s.root)) {
+      try {
+        const st = statSync(s.root);
+        if (st.isDirectory()) ok(`${s.client} root ${s.root}`);
+        else bad(`${s.client} root ${s.root} is not a directory`);
+      } catch (err) {
+        bad(`${s.client} root ${s.root}: ${(err as Error).message}`);
+      }
+    } else if (s.client === "claude_code") {
+      bad(`claude_code root not found: ${s.root} — is Claude Code installed?`);
+    } else {
+      // For Codex/Gemini: only warn if the CLI's parent config dir exists
+      // (suggesting the CLI was installed and used at least once). If that's
+      // also absent, the CLI simply isn't installed — nothing to report.
+      const parent = dirname(s.root);
+      if (existsSync(parent)) {
+        wrn(`${s.client} root not found: ${s.root} (CLI dir exists but no sessions yet)`);
+      }
     }
-  } else {
-    bad(`projects root not found: ${paths.projectsRoot} — is Claude Code installed?`);
   }
 
   // DB writability check.

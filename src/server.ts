@@ -2,14 +2,13 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { Indexer } from "./indexer.js";
+import { Indexer, defaultSources } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath } from "./queries.js";
 import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
 
 const HOME = homedir();
 const DB_DIR = join(HOME, ".momento");
 const DB_PATH = join(DB_DIR, "index.db");
-const PROJECTS_ROOT = join(HOME, ".claude", "projects");
 
 mkdirSync(DB_DIR, { recursive: true });
 
@@ -64,19 +63,20 @@ if (argv.includes("--doctor")) {
 }
 
 const indexer = new Indexer(DB_PATH);
+const SOURCES = defaultSources(HOME);
 
 const sessionCount = (indexer.db.prepare(`SELECT COUNT(*) AS n FROM sessions`).get() as { n: number }).n;
 if (sessionCount === 0) {
-  indexer.buildAll(PROJECTS_ROOT).catch((err) =>
+  indexer.buildAllSources(SOURCES).catch((err) =>
     process.stderr.write(`momento: background build failed: ${err.message}\n`),
   );
 }
-indexer.watch(PROJECTS_ROOT);
+indexer.watchSources(SOURCES);
 
 const TOOLS = [
   {
     name: "search",
-    description: "BM25 full-text search across all indexed message content. Returns ranked snippets.",
+    description: "BM25 full-text search across all indexed message content. Returns ranked snippets. KEYWORD-ONLY — synonyms and paraphrases will not match. Prefer rare/unique terms (codenames, hostnames, library names) over broad ones; if a query misses, retry with different vocabulary before concluding the data is absent.",
     inputSchema: {
       type: "object",
       properties: {
@@ -99,7 +99,7 @@ const TOOLS = [
   {
     name: "find_by_topic",
     description:
-      "Keyword/BM25 ranking over session summaries and message contents. Returns past sessions whose text overlaps the given description. NOT semantic similarity — synonyms won't match.",
+      "Keyword/BM25 ranking over session summaries and message contents. Returns past sessions whose text overlaps the given description. NOT semantic similarity — synonyms won't match. If a topic search misses, retry `search` with rarer/domain-specific terms (codenames, hostnames, error strings) rather than concluding the topic isn't indexed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -159,9 +159,23 @@ const TOOLS = [
 ];
 
 const INSTRUCTIONS = [
-  "momento indexes Claude Code conversation history at ~/.claude/projects/.",
-  "project_path = launch dir, not edit target. Use files_touched or get_recent_by_edited_path to find work on a specific repo.",
-  "Sessions returned by get_recent and get_project include topEditedPaths: the top 5 repo directories under MOMENTO_SRC_ROOTS (defaults to ~/src) where the session actually wrote/edited files.",
+  "momento indexes conversation history across THREE coding-agent CLIs: Claude Code (~/.claude/projects/), Codex (~/.codex/sessions/), and Gemini (~/.gemini/tmp/). Every session row carries a `client` field naming its source.",
+  "",
+  "SEARCH STRATEGY (read this — it changes how you should query):",
+  "- search and find_by_topic are KEYWORD-ONLY (FTS5 + BM25). They do NOT understand synonyms or paraphrases. A query for 'bug bounty' will not match a session that says 'VRP submission' even though they mean the same thing.",
+  "- Prefer UNIQUE, RARE vocabulary (project codenames like G-HUNT-AUTO-26-UNAUTH, target hostnames, error strings, library names) over broad terms ('testing', 'bug', 'review'). Rare terms rank higher and surface the right session faster.",
+  "- If first search misses, drop project_path filters and retry with rarer terms. Try the user's own words AND domain-specific words (e.g., search 'stitch' AND 'vrp' AND 'unauthenticated', not just 'google bug bounty').",
+  "- When the user references a topic in vague terms, run 2-3 searches with different keyword angles before concluding the data isn't there.",
+  "",
+  "PROJECT/PATH SEMANTICS:",
+  "- For Claude Code: project_path = launch dir (encoded), not necessarily the edit target. Use files_touched or get_recent_by_edited_path to find sessions that edited a specific repo.",
+  "- For Codex: project_path = the cwd from session_meta (real filesystem path).",
+  "- For Gemini: project_path = the registered project path (resolved from projectHash via ~/.gemini/projects.json), or the raw hash if unregistered.",
+  "- Sessions returned by get_recent and get_project include topEditedPaths: the top 5 repo directories under MOMENTO_SRC_ROOTS (defaults to ~/src) where the session actually wrote/edited files.",
+  "",
+  "KNOWN GAPS (so you don't over-trust negative results):",
+  "- file_touches and get_recent_by_edited_path only capture writes through Claude's native Read/Write/Edit tools. Edits performed via Bash redirects, MCP tool calls (lorg, stitch-mcp, etc.), or shell scripts are NOT in file_touches even though the conversation about them IS in messages_fts. Always confirm a 'no edits' answer with a content search.",
+  "- Codex sessions have synthetic `<environment_context>` first prompts that bury the real topic; first_prompt is unreliable for Codex. Trust the message body via search instead.",
 ].join("\n");
 
 // MCP protocol versions this server implements. We echo back the client's

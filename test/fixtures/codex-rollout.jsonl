@@ -1,0 +1,8 @@
+{"type":"session_meta","payload":{"id":"019ad326-d431-7713-bd5d-0b53772086fe","cwd":"/Users/me/src/repo-x","timestamp":"2026-04-12T10:00:00Z","cli_version":"1.2.3","model_provider":"openai","instructions":"","source":"cli","originator":"user","git":{"branch":"main"}}}
+{"type":"turn_context","payload":{"model":"gpt-5","cwd":"/Users/me/src/repo-x","approval_policy":"on-request","sandbox_policy":"workspace","effort":"high","summary":""}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"please review the rate-limit retry logic"}]}}
+{"type":"response_item","payload":{"type":"reasoning","content":[{"type":"reasoning_text","text":"thinking about backoff strategy..."}],"summary":[],"encrypted_content":""}}
+{"type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{\"path\":\"/Users/me/src/repo-x/src/api.ts\"}","call_id":"call_1"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"file contents..."}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"the retry handler uses exponential backoff with jitter"}]}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"prompt":10,"candidate":20,"total":30},"rate_limits":{}}}
