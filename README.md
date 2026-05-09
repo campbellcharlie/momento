@@ -139,10 +139,31 @@ Defaults err toward less indexing:
   entirely. Two ways to configure:
   - Env: `MOMENTO_EXCLUDE_PROJECTS=client-foo:internal-bar`,
     `MOMENTO_EXCLUDE_PATHS=/Users/you/src/secrets`. Both take colon- or
-    comma-separated substrings.
-  - File: `~/.momentoignore`. One pattern per line; lines beginning with
-    `project:` filter project directories, others filter file paths. Comments
-    start with `#`.
+    comma-separated patterns.
+  - File: `~/.momentoignore`. One pattern per line. Lines beginning with
+    `project:` filter project directories, others filter file paths. Lines
+    beginning with `#` are comments. A leading `!` re-includes a previously
+    excluded path.
+
+  Pattern syntax (gitignore-ish, with absolute-path semantics):
+
+  ```text
+  **/secrets/**          # any path containing a `secrets/` segment
+  /Users/me/private/*    # absolute prefix; only files directly under it
+  *.env                  # any single path component named *.env
+  client-*               # any path component starting with `client-`
+  !**/secrets/public/**  # negation: re-include this subtree
+  ```
+
+  Glob characters: `**` (any number of path segments), `*` (no `/`), `?`
+  (single non-`/` char), `[abc]` (character class). Patterns with no glob
+  metacharacters fall back to plain substring match for backward
+  compatibility, so configs from earlier momento versions keep working.
+
+  **Exclusions only apply at index time.** They filter what gets written into
+  `~/.momento/index.db`. After editing your env vars or `~/.momentoignore`,
+  run `momento --rebuild` so already-indexed sessions are reprocessed under
+  the new rules.
 
 momento does **not** redact secrets out of message text. Substring-based
 scrubbers miss anything custom and create a false sense of safety; if a repo or

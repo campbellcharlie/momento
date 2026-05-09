@@ -87,9 +87,12 @@ export function runStatus(paths: AdminPaths = defaultPaths()): void {
       `  newest session:   ${newest?.modified ?? "(none)"}`,
       `  oldest session:   ${oldest?.modified ?? "(none)"}`,
       `  index thinking:   ${cfg.indexThinking ? "yes" : "no (default)"}`,
-      `  exclude projects: ${cfg.excludeProjects.length ? cfg.excludeProjects.join(", ") : "(none)"}`,
-      `  exclude paths:    ${cfg.excludePaths.length ? cfg.excludePaths.join(", ") : "(none)"}`,
+      `  exclude projects: ${cfg.rawProjectPatterns.length ? cfg.rawProjectPatterns.join(", ") : "(none)"}`,
+      `  exclude paths:    ${cfg.rawPathPatterns.length ? cfg.rawPathPatterns.join(", ") : "(none)"}`,
     ];
+    if (cfg.rawProjectPatterns.length || cfg.rawPathPatterns.length) {
+      lines.push(`  note: exclusions only apply to new/changed sessions; run \`momento --rebuild\` after editing them.`);
+    }
     process.stdout.write(lines.join("\n") + "\n");
   } finally {
     indexer.close();
