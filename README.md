@@ -1,29 +1,46 @@
 # momento
 
-MCP server that indexes Claude Code conversation history (`~/.claude/projects/`) into
-SQLite and lets Claude query it. Plus an opt-in CLI that auto-injects relevant past
-context into new sessions.
+**Searchable memory for Claude Code.** Every conversation you've ever had, indexed
+by what it actually edited — queryable from inside the next conversation.
 
-## Why
+```text
+> the user asks: "what was that flag for the API rate-limit hack?"
+< momento surfaces 3 prior sessions that edited /src/api/, with snippets.
+< claude continues with full context — no scrolling, no re-explaining.
+```
+
+Two pieces:
+- **MCP server** — `search`, `find_similar`, `get_recent_by_edited_path`, etc.
+- **`momento-inject` CLI** — one-line `UserPromptSubmit` hook that auto-injects
+  relevant past sessions into every new prompt. Hard-capped at 200 ms.
+
+## The problem
 
 Claude Code stores transcripts under a per-project directory keyed by the **launch
-directory**. If you launch in repo A but edit files in repos A, B, and C, only repo A
-sees the session. momento closes that gap: it indexes the actual file touches inside
-each transcript, so "find sessions that edited repo B" works regardless of where
-Claude was launched.
+directory**. Launch in repo A, edit files across A, B, and C — only repo A's history
+remembers. Cross-repo work disappears. So does anything you did 30 days ago.
+
+## What momento does
+
+- Indexes every transcript under `~/.claude/projects/` into SQLite with FTS5.
+- Records the actual file touches inside each session — find sessions by what
+  they *edited*, not where Claude was launched.
+- Exposes 6 MCP tools so Claude can query its own past on demand.
+- Optional `UserPromptSubmit` hook that surfaces the 3 most-relevant past sessions
+  before each prompt — Claude walks in pre-loaded.
+
+Two prod deps (`chokidar`, `zod`). No native bindings. Node 24+ with built-in
+`node:sqlite`.
 
 ## Install
-
-Requires **Node 24+** — uses the built-in `node:sqlite` module (stable in 24,
-experimental and flag-gated in 22). This is intentional: avoids the native-binding
-prebuild headache of `better-sqlite3` and keeps prod dependencies to two
-(`chokidar`, `zod`) for a smaller security-audit surface.
 
 ```sh
 npm install
 npm run build
-npm link  # optional, to use `momento` and `momento-inject` globally
+npm link  # optional, exposes `momento` and `momento-inject` globally
 ```
+
+> **Node 24+** is required — uses built-in `node:sqlite` (stable in 24, flag-gated in 22).
 
 ## Configure Claude Code
 

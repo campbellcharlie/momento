@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "MCP server that indexes and queries Claude Code conversation history at ~/.claude/projects/",
   "type": "module",
+  "license": "MIT",
   "bin": {
     "momento": "dist/server.js",
     "momento-inject": "dist/cli.js"
