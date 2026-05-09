@@ -9,6 +9,7 @@ import {
   cleanFirstPrompt,
   IndexedSessionMeta,
 } from "./parser.js";
+import { MomentoConfig, loadConfig, projectExcluded } from "./config.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -59,6 +60,7 @@ export interface IndexProgress {
 
 export class Indexer {
   readonly db: DatabaseSync;
+  readonly config: MomentoConfig;
   private watcher?: FSWatcher;
   private debounceTimers = new Map<string, NodeJS.Timeout>();
   private indexCache = new Map<string, Map<string, IndexedSessionMeta>>();
@@ -75,12 +77,13 @@ export class Indexer {
   private stmtDelSessFts!: StatementSync;
   private stmtInsSessFts!: StatementSync;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, config?: MomentoConfig) {
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
     this.db.exec("PRAGMA user_version = 1");
+    this.config = config ?? loadConfig();
     this.prepare();
   }
 
@@ -121,6 +124,11 @@ export class Indexer {
   async buildAll(rootDir: string, onProgress?: (p: IndexProgress) => void): Promise<void> {
     let done = 0;
     for await (const ref of iterateSessions(rootDir)) {
+      if (projectExcluded(this.config, ref.projectDir)) {
+        done++;
+        onProgress?.({ done, current: ref.jsonlPath });
+        continue;
+      }
       try {
         const st = await stat(ref.jsonlPath);
         const mtimeIso = st.mtime.toISOString();
@@ -140,7 +148,7 @@ export class Indexer {
   }
 
   async indexSession(jsonlPath: string, projectDir: string, sessionId: string): Promise<void> {
-    const parsed = await parseSession(jsonlPath);
+    const parsed = await parseSession(jsonlPath, this.config);
     const id = parsed.sessionId || sessionId;
     let meta = this.indexCache.get(projectDir);
     if (!meta) {
@@ -217,6 +225,7 @@ export class Indexer {
         } else {
           const projectDir = dirname(path);
           const sessionId = basename(path, ".jsonl");
+          if (projectExcluded(this.config, projectDir)) return;
           this.indexCache.delete(projectDir);
           this.indexSession(path, projectDir, sessionId).catch((err) =>
             process.stderr.write(`momento: watch reindex failed ${path}: ${err.message}\n`),

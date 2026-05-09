@@ -1,0 +1,4 @@
+{"type":"user","uuid":"u1","timestamp":"2026-05-08T11:00:00.000Z","sessionId":"sess-malformed","message":{"role":"user","content":"first prompt"}}
+this is not json at all
+{"type":"unknown_event","payload":42}
+{"type":"assistant","uuid":"a1","timestamp":"2026-05-08T11:00:05.000Z","sessionId":"sess-malformed","message":{"role":"assistant","content":[{"type":"text","text":"reply after garbage"}]}}

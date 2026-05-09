@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
-import { findSimilar } from "./queries.js";
+import { findByTopic } from "./queries.js";
 
 const DB_PATH = join(homedir(), ".momento", "index.db");
 const TIMEOUT_MS = 200;
@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   const db = new DatabaseSync(DB_PATH, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 50");
   try {
-    const hits = findSimilar(db, prompt, 3);
+    const hits = findByTopic(db, prompt, 3);
     if (hits.length === 0) return;
     const lines: string[] = ["<!-- momento: relevant past sessions -->"];
     for (const h of hits) {

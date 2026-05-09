@@ -130,7 +130,10 @@ export function getProject(db: DatabaseSync, projectPath: string): {
   return { sessions, toolCallCount: tc.n, fileTouchCount: ft.n };
 }
 
-export function findSimilar(
+// Keyword/BM25 ranking over session summaries and message contents. Despite the
+// historical name `findSimilar`, this is keyword overlap, not embedding-based
+// similarity — synonyms won't match. See `findByTopic`, the preferred name.
+export function findByTopic(
   db: DatabaseSync,
   description: string,
   limit = 10,
@@ -156,6 +159,9 @@ export function findSimilar(
   `;
   return db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
 }
+
+/** @deprecated Use {@link findByTopic}. Kept for callers that haven't updated yet. */
+export const findSimilar = findByTopic;
 
 export function getRecent(db: DatabaseSync, n = 20, projectPath?: string): SessionRow[] {
   const sql = `

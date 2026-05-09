@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { Indexer } from "./indexer.js";
-import { search, getProject, findSimilar, getRecent, filesTouched, getRecentByEditedPath } from "./queries.js";
+import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath } from "./queries.js";
+import { runRebuild, runStatus, runDoctor, defaultPaths } from "./admin.js";
 
 const HOME = homedir();
 const DB_DIR = join(HOME, ".momento");
@@ -11,6 +12,45 @@ const DB_PATH = join(DB_DIR, "index.db");
 const PROJECTS_ROOT = join(HOME, ".claude", "projects");
 
 mkdirSync(DB_DIR, { recursive: true });
+
+// Admin subcommands run-and-exit; the MCP server loop never starts.
+const argv = process.argv.slice(2);
+if (argv.includes("--help") || argv.includes("-h")) {
+  process.stdout.write(
+    [
+      "Usage: momento [--rebuild | --status | --doctor]",
+      "",
+      "  No flags          Run the MCP server over stdio (default).",
+      "  --rebuild         Wipe and re-index all sessions from ~/.claude/projects/.",
+      "  --status          Print index stats (sessions, db size, exclusions in effect).",
+      "  --doctor          Diagnose installation; non-zero exit on warnings/failures.",
+      "",
+      "Env: MOMENTO_INDEX_THINKING=1 to index assistant thinking blocks (off by default).",
+      "     MOMENTO_EXCLUDE_PROJECTS, MOMENTO_EXCLUDE_PATHS — colon/comma-separated substrings.",
+      "     ~/.momentoignore — one pattern per line; prefix with `project:` to filter projects.",
+      "",
+    ].join("\n"),
+  );
+  process.exit(0);
+}
+if (argv.includes("--version")) {
+  process.stdout.write("momento 0.1.0\n");
+  process.exit(0);
+}
+if (argv.includes("--rebuild")) {
+  await runRebuild(defaultPaths()).catch((err: Error) => {
+    process.stderr.write(`momento: rebuild failed: ${err.message}\n`);
+    process.exit(2);
+  });
+  process.exit(0);
+}
+if (argv.includes("--status")) {
+  runStatus(defaultPaths());
+  process.exit(0);
+}
+if (argv.includes("--doctor")) {
+  process.exit(runDoctor(defaultPaths()));
+}
 
 const indexer = new Indexer(DB_PATH);
 
@@ -46,8 +86,23 @@ const TOOLS = [
     },
   },
   {
+    name: "find_by_topic",
+    description:
+      "Keyword/BM25 ranking over session summaries and message contents. Returns past sessions whose text overlaps the given description. NOT semantic similarity — synonyms won't match.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        description: { type: "string" },
+        limit: { type: "number", default: 10 },
+      },
+      required: ["description"],
+    },
+  },
+  {
+    // Kept for back-compat with hooks/configs that still call `find_similar`.
+    // Prefer `find_by_topic` — same behavior, more accurate name.
     name: "find_similar",
-    description: "Find past sessions whose summary or first prompt resembles the given description.",
+    description: "Deprecated alias for `find_by_topic`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -119,8 +174,9 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       });
     case "get_project":
       return getProject(indexer.db, String(args.project_path ?? ""));
-    case "find_similar":
-      return findSimilar(
+    case "find_by_topic":
+    case "find_similar": // deprecated alias — same dispatch
+      return findByTopic(
         indexer.db,
         String(args.description ?? ""),
         typeof args.limit === "number" ? args.limit : 10,
