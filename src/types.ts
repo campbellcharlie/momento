@@ -73,12 +73,28 @@ export interface FileTouch {
   timestamp: string;
 }
 
-export function extractText(content: string | ContentBlock[]): string {
+export interface ExtractTextOptions {
+  // Whether to include assistant `thinking` blocks. These often contain internal
+  // deliberation the user never saw and can leak details that don't appear in
+  // final output. Default: false.
+  includeThinking?: boolean;
+}
+
+export function extractText(
+  content: string | ContentBlock[],
+  opts: ExtractTextOptions = {},
+): string {
   if (typeof content === "string") return content;
   const parts: string[] = [];
   for (const block of content) {
     if (block.type === "text" && typeof block.text === "string") parts.push(block.text);
-    else if (block.type === "thinking" && typeof block.thinking === "string") parts.push(block.thinking);
+    else if (
+      opts.includeThinking &&
+      block.type === "thinking" &&
+      typeof block.thinking === "string"
+    ) {
+      parts.push(block.thinking);
+    }
   }
   return parts.join("\n");
 }

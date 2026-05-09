@@ -12,6 +12,7 @@ import {
   UserMessageZ,
   AssistantMessageZ,
 } from "./types.js";
+import { MomentoConfig, loadConfig, pathExcluded } from "./config.js";
 
 export interface SessionRef {
   projectDir: string;
@@ -101,7 +102,11 @@ export async function* iterateSessions(rootDir: string): AsyncGenerator<SessionR
   }
 }
 
-export async function parseSession(jsonlPath: string): Promise<ParsedSession> {
+export async function parseSession(
+  jsonlPath: string,
+  config?: MomentoConfig,
+): Promise<ParsedSession> {
+  const cfg = config ?? loadConfig();
   const messages: ParsedMessage[] = [];
   const toolCalls: ToolCall[] = [];
   const filesTouched: FileTouch[] = [];
@@ -128,14 +133,16 @@ export async function parseSession(jsonlPath: string): Promise<ParsedSession> {
     if (entry.type === "user") {
       const u = UserMessageZ.safeParse(json);
       if (!u.success) continue;
-      const text = extractText(u.data.message.content);
+      // User content never carries `thinking` blocks today, but pass the flag
+      // through so behavior is uniform if that changes.
+      const text = extractText(u.data.message.content, { includeThinking: cfg.indexThinking });
       if (text) {
         messages.push({ uuid: u.data.uuid, role: "user", text, timestamp: u.data.timestamp });
       }
     } else if (entry.type === "assistant") {
       const a = AssistantMessageZ.safeParse(json);
       if (!a.success) continue;
-      const text = extractText(a.data.message.content);
+      const text = extractText(a.data.message.content, { includeThinking: cfg.indexThinking });
       if (text) {
         messages.push({ uuid: a.data.uuid, role: "assistant", text, timestamp: a.data.timestamp });
       }
@@ -158,6 +165,7 @@ export async function parseSession(jsonlPath: string): Promise<ParsedSession> {
             } catch {
               /* file gone or unreadable; keep original */
             }
+            if (pathExcluded(cfg, canonical)) continue;
             filesTouched.push({ filePath: canonical, operation: op, timestamp: a.data.timestamp });
           }
         }

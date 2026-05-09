@@ -12,7 +12,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "inject": "node dist/cli.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "pretest": "tsc",
+    "test": "node --test 'test/*.test.js'"
   },
   "engines": {
     "node": ">=24"
