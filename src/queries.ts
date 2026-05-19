@@ -210,6 +210,65 @@ export function getRecentByEditedPath(
   return sessions;
 }
 
+// Sessions whose turn classification includes at least one turn of the given
+// category. Returns rows ordered by most-recent-matching-turn DESC so the
+// caller sees the freshest debugging/feature/etc. work first. The category
+// dimension is per-turn (codeburn-style); a session can match multiple
+// categories.
+//
+// `minTurns` lets the caller require that the category showed up more than
+// once in the session (default 1) — useful when you want a session that
+// actually was about that category, not one that brushed it.
+export function findByCategory(
+  db: DatabaseSync,
+  category: string,
+  opts: { limit?: number; projectPath?: string; minTurns?: number } = {},
+): SessionRow[] {
+  const limit = opts.limit ?? 20;
+  const minTurns = Math.max(1, opts.minTurns ?? 1);
+  // GROUP BY + HAVING gives us both the count filter and the per-session
+  // last-matching-turn for ordering. JOIN-then-aggregate beats two round
+  // trips since turn_categories is indexed on (category) and the join key
+  // (session_id) is the sessions PK.
+  const sql = `
+    SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
+           s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount,
+           s.jsonl_path AS jsonlPath, s.client AS client,
+           MAX(tc.timestamp) AS lastMatch,
+           COUNT(*) AS matchingTurns
+    FROM turn_categories tc JOIN sessions s ON s.id = tc.session_id
+    WHERE tc.category = ?
+      ${opts.projectPath ? "AND s.project_path = ?" : ""}
+    GROUP BY s.id
+    HAVING matchingTurns >= ?
+    ORDER BY lastMatch DESC
+    LIMIT ?
+  `;
+  const params = (opts.projectPath
+    ? [category, opts.projectPath, minTurns, limit]
+    : [category, minTurns, limit]) as (string | number)[];
+  const sessions = db.prepare(sql).all(...params) as unknown as SessionRow[];
+  attachTopEditedPaths(db, sessions);
+  return sessions;
+}
+
+// Per-session breakdown: how many turns of each category. Useful to surface
+// the session's "shape" alongside its summary.
+export function sessionCategoryBreakdown(
+  db: DatabaseSync,
+  sessionId: string,
+): { category: string; turns: number }[] {
+  return db
+    .prepare(
+      `SELECT category, COUNT(*) AS turns
+       FROM turn_categories
+       WHERE session_id = ?
+       GROUP BY category
+       ORDER BY turns DESC`,
+    )
+    .all(sessionId) as unknown as { category: string; turns: number }[];
+}
+
 export function filesTouched(
   db: DatabaseSync,
   pattern: string,
