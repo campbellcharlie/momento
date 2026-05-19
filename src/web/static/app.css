@@ -396,6 +396,15 @@ body.dashboard { grid-template-rows: 48px 1fr 24px; }
   text-align: right;
 }
 
+/* Category lanes share the .lane skeleton but get distinct accent so the
+   two side-by-side panels read as different axes. */
+.lane-category .lane-bar-fill {
+  background: var(--badge-codex); /* blue-leaning to differentiate from accent green */
+}
+.lane-category[data-selected="1"] {
+  border-color: var(--badge-codex);
+}
+
 .hint { font-size: 11px; color: var(--text-muted); padding: 0 16px; }
 
 .detail {

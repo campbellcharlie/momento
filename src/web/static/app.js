@@ -579,6 +579,59 @@ document.getElementById("repos-canvas").addEventListener("click", (e) => {
   setScopeRepo(lane.dataset.repo);
 });
 
+// Categories panel: bar-per-category visualization. Same lane pattern as
+// repos. Reuses the existing /api/categories route and the existing
+// activeCategory state (managed by the Sessions panel chips), so clicking
+// here keeps the chip row in the Sessions panel in sync.
+async function loadCategoryLanes() {
+  const canvas = document.getElementById("categories-canvas");
+  if (!canvas) return;
+  let cats;
+  try {
+    const r = await fetch("/api/categories");
+    if (!r.ok) return;
+    const j = await r.json();
+    cats = Array.isArray(j.categories) ? j.categories : [];
+  } catch {
+    return;
+  }
+  if (cats.length === 0) {
+    canvas.innerHTML = `<p class="stub">no categorized turns yet — run <code>momento --rebuild</code></p>`;
+    return;
+  }
+  const max = Math.max(...cats.map((c) => c.sessions), 1);
+  const lines = ['<ul class="lane-list">'];
+  for (const c of cats) {
+    const pct = Math.max(2, Math.round((c.sessions / max) * 100));
+    const selected = activeCategory === c.category ? ' data-selected="1"' : "";
+    lines.push(
+      `<li class="lane lane-category" data-category="${escapeAttr(c.category)}"${selected} title="${c.turns} turns across ${c.sessions} sessions">`,
+      `<span class="lane-name">${escapeHtml(c.category)}</span>`,
+      `<span class="lane-bar"><span class="lane-bar-fill" style="width:${pct}%"></span></span>`,
+      `<span class="lane-count">${c.sessions}</span>`,
+      `</li>`,
+    );
+  }
+  lines.push("</ul>");
+  canvas.innerHTML = lines.join("");
+}
+
+// Clicking a category lane sets activeCategory and mirrors the change into
+// the existing chip row in the Sessions panel so both surfaces agree.
+document.getElementById("categories-canvas").addEventListener("click", (e) => {
+  const lane = e.target.closest(".lane[data-category]");
+  if (!lane) return;
+  const next = activeCategory === lane.dataset.category ? "" : lane.dataset.category;
+  setActiveCategory(next);
+  for (const l of document.querySelectorAll("#categories-canvas .lane")) {
+    if (next && l.dataset.category === next) l.setAttribute("data-selected", "1");
+    else l.removeAttribute("data-selected");
+  }
+  const q = searchInput.value.trim();
+  if (q) runSearch(q);
+  else loadRecent();
+});
+
 document.querySelectorAll(".detail-tabs .tab").forEach((btn) => {
   btn.addEventListener("click", () => renderDetailTab(btn.dataset.tab));
 });
@@ -635,12 +688,14 @@ connectFeed();
 pollStatus();
 setInterval(pollStatus, 5000);
 loadCategoryChips();
+loadCategoryLanes();
 loadHeatmap();
 loadRepoLanes();
 // Refresh viz panels every 60s so they reflect new indexing activity.
 setInterval(() => {
   loadHeatmap();
   loadCategoryChips();
+  loadCategoryLanes();
   loadRepoLanes();
 }, 60_000);
 
