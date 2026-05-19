@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, copyFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { parseCodexSession, iterateCodexSessions } from "../dist/codex.js";
 import { loadConfig } from "../dist/config.js";
@@ -35,6 +35,7 @@ test("parseCodexSession — RolloutLine envelope: messages, tool calls, file tou
   // keeps the literal value. Either way, the touch should be recorded.
   assert.equal(result.filesTouched.length, 1);
   assert.equal(result.filesTouched[0].operation, "read");
+  assert.equal(result.filesTouched[0].source, "native");
 });
 
 test("parseCodexSession — includes reasoning when MOMENTO_INDEX_THINKING=1", async () => {
@@ -67,6 +68,36 @@ test("iterateCodexSessions — walks YYYY/MM/DD partitions", async () => {
     for await (const ref of iterateCodexSessions(work)) refs.push(ref);
     assert.equal(refs.length, 1);
     assert.equal(refs[0].sessionId, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("parseCodexSession marks shell-derived file touches as inferred", async () => {
+  const work = mkdtempSync(join(tmpdir(), "momento-codex-shell-"));
+  const rollout = join(work, "rollout-2026-04-12T10-00-00-shell-test-aaaa-bbbb-cccc-dddddddddddd.jsonl");
+  try {
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "shell-test", cwd: "/Users/me/src/repo-x", timestamp: "2026-04-12T10:00:00Z" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "shell",
+          arguments: JSON.stringify({ path: "/Users/me/src/repo-x/src/generated.ts" }),
+        },
+      }),
+    ];
+    mkdirSync(work, { recursive: true });
+    writeFileSync(rollout, lines.join("\n") + "\n");
+    const cfg = loadConfig({ env: {}, ignoreFile: "/nonexistent" });
+    const result = await parseCodexSession(rollout, cfg);
+    assert.equal(result.filesTouched.length, 1);
+    assert.equal(result.filesTouched[0].operation, "read");
+    assert.equal(result.filesTouched[0].source, "inferred");
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

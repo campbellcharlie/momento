@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { Indexer, defaultSources } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath } from "./queries.js";
 import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
+import { startWebServer } from "./web/server.js";
 
 const HOME = homedir();
 const DB_DIR = join(HOME, ".momento");
@@ -17,14 +18,15 @@ const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
   process.stdout.write(
     [
-      "Usage: momento [--rebuild | --status | --doctor | --explain-exclusions [PATH]]",
+      "Usage: momento [--rebuild | --status | --doctor | --explain-exclusions [PATH] | --web [--port N]]",
       "",
       "  No flags                     Run the MCP server over stdio (default).",
-      "  --rebuild                    Wipe and re-index all sessions from ~/.claude/projects/.",
+      "  --rebuild                    Wipe and re-index all sessions from the configured client roots.",
       "  --status                     Print index stats (sessions, db size, exclusions in effect).",
       "  --doctor                     Diagnose installation; non-zero exit on warnings/failures.",
       "  --explain-exclusions [PATH]  List active exclusion rules. Pass a path to trace which",
       "                               rule(s) match it; exits 1 if the path would be excluded.",
+      "  --web [--port N]             Serve the local read-only web UI on 127.0.0.1:N (default 8765).",
       "",
       "Env: MOMENTO_INDEX_THINKING=1 to index assistant thinking blocks (off by default).",
       "     MOMENTO_EXCLUDE_PROJECTS, MOMENTO_EXCLUDE_PATHS — colon/comma-separated patterns.",
@@ -61,6 +63,34 @@ if (argv.includes("--doctor")) {
     process.exit(runExplainExclusions(defaultPaths(), target));
   }
 }
+if (argv.includes("--web")) {
+  // Parse --port N (defaults to 8765) and --host (defaults to 127.0.0.1; the
+  // server itself refuses any non-loopback host).
+  const portIdx = argv.indexOf("--port");
+  const port = portIdx >= 0 && argv[portIdx + 1] ? Number(argv[portIdx + 1]) : 8765;
+  const hostIdx = argv.indexOf("--host");
+  const host = hostIdx >= 0 && argv[hostIdx + 1] ? argv[hostIdx + 1] : "127.0.0.1";
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    process.stderr.write(`momento: invalid --port: ${argv[portIdx + 1]}\n`);
+    process.exit(2);
+  }
+  startWebServer({ dbPath: DB_PATH, host, port })
+    .then((handle) => {
+      process.stdout.write(
+        `momento web: listening on http://${handle.host}:${handle.port} (read-only, loopback only)\n`,
+      );
+      const stop = (): void => {
+        handle.close().finally(() => process.exit(0));
+      };
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+    })
+    .catch((err: Error) => {
+      process.stderr.write(`momento web: ${err.message}\n`);
+      process.exit(2);
+    });
+  // The web server keeps the event loop alive; don't fall through to MCP.
+} else {
 
 const indexer = new Indexer(DB_PATH);
 const SOURCES = defaultSources(HOME);
@@ -136,7 +166,7 @@ const TOOLS = [
   },
   {
     name: "files_touched",
-    description: "Sessions that read, wrote, or edited a file path matching the given pattern (LIKE).",
+    description: "Sessions that read, wrote, or edited a file path matching the given pattern (LIKE). Results include `source` so callers can distinguish native file tools from inferred touches.",
     inputSchema: {
       type: "object",
       properties: { pattern: { type: "string" } },
@@ -146,7 +176,7 @@ const TOOLS = [
   {
     name: "get_recent_by_edited_path",
     description:
-      "Most recently modified sessions whose write/edit touches fall under the given path prefix. Use this to find sessions that actually edited a repo, regardless of where Claude Code was launched.",
+      "Most recently modified sessions whose native write/edit touches fall under the given path prefix. Use this to find sessions that actually edited a repo, regardless of where the client was launched.",
     inputSchema: {
       type: "object",
       properties: {
@@ -174,7 +204,7 @@ const INSTRUCTIONS = [
   "- Sessions returned by get_recent and get_project include topEditedPaths: the top 5 repo directories under MOMENTO_SRC_ROOTS (defaults to ~/src) where the session actually wrote/edited files.",
   "",
   "KNOWN GAPS (so you don't over-trust negative results):",
-  "- file_touches and get_recent_by_edited_path only capture writes through Claude's native Read/Write/Edit tools. Edits performed via Bash redirects, MCP tool calls (lorg, stitch-mcp, etc.), or shell scripts are NOT in file_touches even though the conversation about them IS in messages_fts. Always confirm a 'no edits' answer with a content search.",
+  "- file_touches can include both native and inferred touches. `get_recent_by_edited_path` and `topEditedPaths` only trust native write/edit touches. Edits performed via Bash redirects, MCP tool calls (lorg, stitch-mcp, etc.), or shell scripts are still invisible to those path-based views even when the conversation about them is indexed in messages_fts. Always confirm a 'no edits' answer with a content search.",
   "- Codex sessions have synthetic `<environment_context>` first prompts that bury the real topic; first_prompt is unreliable for Codex. Trust the message body via search instead.",
 ].join("\n");
 
@@ -341,3 +371,5 @@ process.stdin.on("data", (chunk: string) => {
 process.stdin.on("end", () => {
   shutdown();
 });
+
+} // end of MCP-mode block (else branch of `--web`)

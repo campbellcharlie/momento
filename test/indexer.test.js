@@ -83,6 +83,7 @@ test("Indexer drops touches under excluded paths", async () => {
     const touches = filesTouched(fx.indexer.db, "%");
     for (const t of touches) {
       assert.ok(!t.filePath.includes("private-secrets"), `leaked: ${t.filePath}`);
+      assert.equal(t.source, "native");
     }
   } finally {
     fx.cleanup();

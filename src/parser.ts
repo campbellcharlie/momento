@@ -166,7 +166,12 @@ export async function parseSession(
               /* file gone or unreadable; keep original */
             }
             if (pathExcluded(cfg, canonical)) continue;
-            filesTouched.push({ filePath: canonical, operation: op, timestamp: a.data.timestamp });
+            filesTouched.push({
+              filePath: canonical,
+              operation: op,
+              timestamp: a.data.timestamp,
+              source: "native",
+            });
           }
         }
       }

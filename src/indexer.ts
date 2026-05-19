@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS file_touches (
   session_id TEXT,
   file_path TEXT,
   operation TEXT,
-  timestamp TEXT
+  timestamp TEXT,
+  touch_source TEXT NOT NULL DEFAULT 'native'
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_name ON tool_calls(tool_name);
@@ -56,7 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_file_touches_path ON file_touches(file_path);
 // columns/tables. Migrations are idempotent — they read PRAGMA user_version and
 // ALTER only if needed. Existing rows get sane defaults so the DB is queryable
 // before the first reindex.
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 function migrate(db: DatabaseSync): void {
   const cur = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -69,6 +70,12 @@ function migrate(db: DatabaseSync): void {
       db.exec("ALTER TABLE sessions ADD COLUMN client TEXT NOT NULL DEFAULT 'claude_code'");
     }
     db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_client ON sessions(client)");
+  }
+  if (cur < 3) {
+    const cols = db.prepare("PRAGMA table_info(file_touches)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "touch_source")) {
+      db.exec("ALTER TABLE file_touches ADD COLUMN touch_source TEXT NOT NULL DEFAULT 'native'");
+    }
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
@@ -135,7 +142,7 @@ export class Indexer {
       `INSERT INTO tool_calls(session_id, tool_name, input_json, timestamp) VALUES (?, ?, ?, ?)`,
     );
     this.stmtInsTouch = this.db.prepare(
-      `INSERT INTO file_touches(session_id, file_path, operation, timestamp) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO file_touches(session_id, file_path, operation, timestamp, touch_source) VALUES (?, ?, ?, ?, ?)`,
     );
     this.stmtDelSessFts = this.db.prepare(`DELETE FROM sessions_fts WHERE session_id = ?`);
     this.stmtInsSessFts = this.db.prepare(
@@ -289,7 +296,9 @@ export class Indexer {
       this.stmtInsSessFts.run(id, summary ?? "", firstPrompt ?? "");
       for (const msg of parsed.messages) this.stmtInsFts.run(id, msg.role, msg.text);
       for (const tc of parsed.toolCalls) this.stmtInsTool.run(id, tc.toolName, tc.inputJson, tc.timestamp);
-      for (const ft of parsed.filesTouched) this.stmtInsTouch.run(id, ft.filePath, ft.operation, ft.timestamp);
+      for (const ft of parsed.filesTouched) {
+        this.stmtInsTouch.run(id, ft.filePath, ft.operation, ft.timestamp, ft.source);
+      }
       this.db.exec("COMMIT");
     } catch (err) {
       this.db.exec("ROLLBACK");

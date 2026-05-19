@@ -1,7 +1,7 @@
 {
   "name": "momento-mcp",
   "version": "0.1.0",
-  "description": "MCP server that indexes and queries Claude Code conversation history at ~/.claude/projects/",
+  "description": "MCP server and prompt hook for searchable coding-agent memory across Claude Code, Codex, and Gemini",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -9,11 +9,11 @@
     "momento-inject": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"require('fs').cpSync('src/web/static','dist/web/static',{recursive:true})\"",
     "start": "node dist/server.js",
     "inject": "node dist/cli.js",
     "dev": "tsc --watch",
-    "pretest": "tsc",
+    "pretest": "tsc && node -e \"require('fs').cpSync('src/web/static','dist/web/static',{recursive:true})\"",
     "test": "node --test 'test/*.test.js'"
   },
   "engines": {

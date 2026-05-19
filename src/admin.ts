@@ -57,8 +57,8 @@ function fileSize(p: string): number {
 }
 
 export async function runRebuild(paths: AdminPaths = defaultPaths()): Promise<void> {
-  // Wipe DB + WAL/SHM sidecars and rebuild from scratch. Safer than expecting users
-  // to delete the right files by hand.
+  // Wipe DB + WAL/SHM sidecars and rebuild from scratch across all configured
+  // client roots. Safer than expecting users to delete the right files by hand.
   for (const suffix of ["", "-wal", "-shm"]) {
     const p = paths.dbPath + suffix;
     if (existsSync(p)) rmSync(p, { force: true });

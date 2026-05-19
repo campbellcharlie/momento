@@ -1,13 +1,13 @@
 # momento
 
-**Searchable memory for Claude Code.** Indexes the transcripts Claude Code keeps
-under `~/.claude/projects/` and lets you query them by what each session
-actually edited — from inside the next conversation.
+**Searchable memory for coding-agent CLIs.** Indexes local transcripts from
+Claude Code, Codex, and Gemini, then lets the next session query what prior
+sessions actually discussed and edited.
 
 ```text
 > the user asks: "what was that flag for the API rate-limit hack?"
 < momento surfaces 3 prior sessions that edited /src/api/, with snippets.
-< claude continues with full context — no scrolling, no re-explaining.
+< the agent continues with full context — no scrolling, no re-explaining.
 ```
 
 Two pieces:
@@ -15,24 +15,32 @@ Two pieces:
 - **`momento-inject` CLI** — one-line `UserPromptSubmit` hook that auto-injects
   relevant past sessions into every new prompt. Hard-capped at 200 ms.
 
-Coverage is whatever Claude Code has retained on disk. If you've cleared
-`~/.claude/projects/` or never ran Claude Code from a given machine, those
-sessions aren't recoverable.
+Coverage is whatever each client has retained on disk. If you've cleared
+`~/.claude/projects/`, `~/.codex/sessions/`, or `~/.gemini/tmp` on a given
+machine, those sessions aren't recoverable there.
 
 ## The problem
 
-Claude Code stores transcripts under a per-project directory keyed by the **launch
-directory**. Launch in repo A, edit files across A, B, and C — only repo A's history
-remembers. Cross-repo work disappears. So does anything you did 30 days ago.
+Coding-agent CLIs keep useful local history, but it is siloed by client,
+machine, launch directory, or hashed project IDs. That makes it hard to answer
+simple questions like:
+
+- Which session actually edited this repo?
+- What did I call that workaround last week?
+- Did this happen in Claude Code, Codex, or Gemini?
 
 ## What momento does
 
-- Indexes every transcript under `~/.claude/projects/` into SQLite with FTS5.
-- Records the actual file touches inside each session — find sessions by what
-  they *edited*, not where Claude was launched.
-- Exposes 6 MCP tools so Claude can query its own past on demand.
-- Optional `UserPromptSubmit` hook that surfaces the 3 most-relevant past sessions
-  before each prompt — Claude walks in pre-loaded.
+- Indexes transcripts from:
+  - Claude Code: `~/.claude/projects/`
+  - Codex: `~/.codex/sessions/`
+  - Gemini: `~/.gemini/tmp/`
+- Records file touches inside each session so you can query by what a session
+  actually edited, not only where the client was launched.
+- Exposes 6 MCP tools so any client can query the shared index on demand.
+- Ships an optional `momento-inject` hook that can pre-load relevant history
+  before a prompt. It is intentionally conservative and will skip low-signal or
+  mechanical prompts.
 
 Two prod deps (`chokidar`, `zod`). No native bindings. Node 24+ with built-in
 `node:sqlite`.
@@ -47,10 +55,10 @@ npm link  # optional, exposes `momento` and `momento-inject` globally
 
 > **Node 24+** is required — uses built-in `node:sqlite` (stable in 24, flag-gated in 22).
 
-## Configure Claude Code
+## Configure The MCP Server
 
-Merge into `~/.claude/settings.json` (don't overwrite — preserve any existing
-`mcpServers` / `hooks` entries):
+The MCP server is client-agnostic: point your client at `dist/server.js`.
+Claude Code example:
 
 ```json
 {
@@ -62,8 +70,8 @@ Merge into `~/.claude/settings.json` (don't overwrite — preserve any existing
 
 ## Optional: auto-injection
 
-Merge a `UserPromptSubmit` hook into the same `settings.json` to surface
-relevant past sessions:
+If your client supports a pre-prompt hook, point it at `dist/cli.js`. Claude
+Code example:
 
 ```json
 {
@@ -79,7 +87,7 @@ relevant past sessions:
 
 All tools return JSON. Sessions returned by `get_recent`, `get_project`, and
 `get_recent_by_edited_path` include `topEditedPaths`: the top 5 repo directories
-the session actually wrote/edited, bucketed under `MOMENTO_SRC_ROOTS`
+the session actually wrote/edited through **native write/edit tools**, bucketed under `MOMENTO_SRC_ROOTS`
 (colon-separated; defaults to `~/src`). Set this env var if your repos live
 elsewhere.
 
@@ -90,8 +98,8 @@ elsewhere.
 | `find_by_topic` | `description: string`, `limit?: number=10` | `Session[]` ranked by BM25 keyword overlap. **Not semantic** — synonyms won't match. |
 | `find_similar` | (deprecated alias for `find_by_topic`) | same as above |
 | `get_recent` | `n?: number=20`, `project_path?: string` | `Session[]` (modified desc) |
-| `files_touched` | `pattern: string` (SQL `LIKE`) | `[{ sessionId, filePath, operation, ts }]` |
-| `get_recent_by_edited_path` | `path: string` (prefix), `n?: number=20` | `Session[]` whose write/edit touches start with `path` |
+| `files_touched` | `pattern: string` (SQL `LIKE`) | `[{ sessionId, filePath, operation, source, projectPath, summary }]` |
+| `get_recent_by_edited_path` | `path: string` (prefix), `n?: number=20` | `Session[]` whose **native** write/edit touches start with `path` |
 
 A `Session` row looks like:
 
@@ -112,23 +120,27 @@ A `Session` row looks like:
 ## CLI: `momento-inject`
 
 Reads a prompt from stdin (or argv) and prints the top 3 prior sessions whose
-summary/first_prompt resembles it, formatted for a `UserPromptSubmit` hook:
+summary/first_prompt resembles it, formatted for a prompt hook:
 
 ```
 <!-- momento: relevant past sessions -->
 - [myrepo] fix the indexer bug (2026-05-08) - 240abb0b-...
 ```
 
-Hard-capped at 200 ms; opens the DB read-only; silent on error. Safe to wire
-into hooks without blocking the prompt.
+Hard-capped at 200 ms; opens the DB read-only; silent on error. It skips short,
+mechanical, and low-confidence prompts rather than injecting noisy context.
+
+Set `MOMENTO_INJECT_DEBUG=1` to append JSONL debug traces to
+`~/.momento/inject.log`. This records the parsed prompt, token count, top hit
+scores, and inject/skip reason.
 
 ## Privacy
 
-Claude Code transcripts contain everything you (and the model) wrote: prompts,
-file contents, tool inputs, internal reasoning. momento indexes that into a
-local SQLite DB at `~/.momento/index.db`. Nothing leaves your machine, but the
-index is by definition a centralized, full-text-searchable copy of your
-conversation history. Treat it accordingly.
+These transcripts can contain everything you and the model wrote: prompts, file
+contents, tool inputs, and sometimes internal reasoning. momento indexes that
+into a local SQLite DB at `~/.momento/index.db`. Nothing leaves your machine,
+but the index is still a centralized, full-text-searchable copy of your local
+agent history. Treat it accordingly.
 
 Defaults err toward less indexing:
 
@@ -174,7 +186,7 @@ project might contain secrets you don't want indexed, exclude it.
 ```sh
 momento --status                          # session count, db size, exclusions in effect
 momento --doctor                          # validate node version, projects root, db readability
-momento --rebuild                         # wipe index.db and re-index from ~/.claude/projects/
+momento --rebuild                         # wipe index.db and re-index from the configured client roots
 momento --explain-exclusions              # list active exclusion rules + their source
 momento --explain-exclusions <path>       # trace which rule(s) match a given path
 momento --help

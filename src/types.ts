@@ -71,6 +71,7 @@ export interface FileTouch {
   filePath: string;
   operation: "read" | "write" | "edit";
   timestamp: string;
+  source: "native" | "inferred";
 }
 
 export interface ExtractTextOptions {

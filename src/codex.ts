@@ -23,7 +23,7 @@ import { MomentoConfig, loadConfig, pathExcluded } from "./config.js";
 // effort — Codex tools are user-configurable, so this list will drift. We index
 // the standard built-ins and let everything else fall through.
 const FILE_TOOL_OP: Record<string, "read" | "write" | "edit"> = {
-  shell: "read", // ambiguous; tagged read so it's at least findable
+  shell: "read", // ambiguous; kept as inferred provenance only
   read_file: "read",
   write_file: "write",
   edit_file: "edit",
@@ -295,5 +295,10 @@ function recordFileTouch(
     /* file gone or unreadable; keep original */
   }
   if (pathExcluded(cfg, canonical)) return;
-  out.push({ filePath: canonical, operation: op, timestamp });
+  out.push({
+    filePath: canonical,
+    operation: op,
+    timestamp,
+    source: toolName === "shell" ? "inferred" : "native",
+  });
 }

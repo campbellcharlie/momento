@@ -30,6 +30,7 @@ export interface SessionRow {
   messageCount: number | null;
   jsonlPath: string;
   client: string;
+  score?: number;
   topEditedPaths?: string[];
 }
 
@@ -42,10 +43,11 @@ const SRC_ROOTS = (process.env.MOMENTO_SRC_ROOTS
   : [`${process.env.HOME ?? ""}/src`]
 ).map(canonicalize);
 function bucketPath(filePath: string): string | null {
+  const fullPath = canonicalize(filePath);
   for (const root of SRC_ROOTS) {
     if (!root) continue;
-    if (filePath.startsWith(root + "/")) {
-      const rest = filePath.slice(root.length + 1);
+    if (fullPath.startsWith(root + "/")) {
+      const rest = fullPath.slice(root.length + 1);
       const repo = rest.split("/")[0];
       if (repo) return `${root}/${repo}`;
     }
@@ -60,7 +62,9 @@ function attachTopEditedPaths(db: DatabaseSync, sessions: SessionRow[]): void {
     .prepare(
       `SELECT session_id AS sessionId, file_path AS filePath
        FROM file_touches
-       WHERE session_id IN (${placeholders}) AND operation IN ('write','edit')`,
+       WHERE session_id IN (${placeholders})
+         AND operation IN ('write','edit')
+         AND touch_source = 'native'`,
     )
     .all(...sessions.map((s) => s.id)) as unknown as { sessionId: string; filePath: string }[];
   const counts = new Map<string, Map<string, number>>();
@@ -80,8 +84,24 @@ function attachTopEditedPaths(db: DatabaseSync, sessions: SessionRow[]): void {
 }
 
 const FTS_SAFE = /[^A-Za-z0-9_\s]/g;
+const FTS_STOPWORDS = new Set([
+  "a", "an", "and", "are", "at", "be", "but", "by", "for", "from", "get", "give",
+  "how", "i", "if", "in", "is", "it", "its", "me", "my", "of", "on", "or", "our",
+  "please", "review", "show", "that", "the", "their", "them", "then", "this", "to",
+  "use", "was", "what", "with", "you", "your",
+]);
+
+function ftsTokens(q: string): string[] {
+  return q.replace(FTS_SAFE, " ").trim().split(/\s+/).filter(Boolean);
+}
+
 function ftsEscape(q: string): string {
-  return q.replace(FTS_SAFE, " ").trim().split(/\s+/).filter(Boolean).map((t) => `"${t}"`).join(" OR ");
+  return ftsTokens(q).map((t) => `"${t}"`).join(" OR ");
+}
+
+function ftsAndQuery(tokens: string[]): string {
+  const rare = tokens.filter((t) => t.length > 1 && !FTS_STOPWORDS.has(t.toLowerCase()));
+  return rare.map((t) => `"${t}"`).join(" AND ");
 }
 
 export function search(
@@ -136,13 +156,23 @@ export function getProject(db: DatabaseSync, projectPath: string): {
 // Keyword/BM25 ranking over session summaries and message contents. Despite the
 // historical name `findSimilar`, this is keyword overlap, not embedding-based
 // similarity — synonyms won't match. See `findByTopic`, the preferred name.
-export function findByTopic(
+export type MatchType = "and" | "or" | "none";
+
+export interface RankedTopicResult {
+  hits: SessionRow[];
+  matchType: MatchType;
+}
+
+// Two-pass: stricter AND over rare tokens first, OR fallback only if AND
+// returns nothing. Callers can trust an "and" match without re-checking
+// raw BM25 scores (which are degenerate on small corpora).
+export function findByTopicRanked(
   db: DatabaseSync,
   description: string,
   limit = 10,
-): SessionRow[] {
-  const fts = ftsEscape(description);
-  if (!fts) return [];
+): RankedTopicResult {
+  const tokens = ftsTokens(description);
+  if (tokens.length === 0) return { hits: [], matchType: "none" };
   const sql = `
     WITH per_msg AS (
       SELECT session_id AS sid, bm25(messages_fts) AS s
@@ -156,12 +186,34 @@ export function findByTopic(
     ranked AS (SELECT sid, MIN(s) AS score FROM combined GROUP BY sid)
     SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
            s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount, s.jsonl_path AS jsonlPath,
-           s.client AS client
+           s.client AS client,
+           r.score AS score
     FROM ranked r JOIN sessions s ON s.id = r.sid
     ORDER BY r.score ASC
     LIMIT ?
   `;
-  return db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
+  const run = (fts: string): SessionRow[] =>
+    db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
+  const andQ = ftsAndQuery(tokens);
+  let hits = andQ ? run(andQ) : [];
+  let matchType: MatchType = hits.length > 0 ? "and" : "none";
+  if (hits.length === 0) {
+    const orQ = tokens.map((t) => `"${t}"`).join(" OR ");
+    if (orQ) {
+      hits = run(orQ);
+      if (hits.length > 0) matchType = "or";
+    }
+  }
+  attachTopEditedPaths(db, hits);
+  return { hits, matchType };
+}
+
+export function findByTopic(
+  db: DatabaseSync,
+  description: string,
+  limit = 10,
+): SessionRow[] {
+  return findByTopicRanked(db, description, limit).hits;
 }
 
 /** @deprecated Use {@link findByTopic}. Kept for callers that haven't updated yet. */
@@ -200,7 +252,9 @@ export function getRecentByEditedPath(
        FROM sessions s
        WHERE s.id IN (
          SELECT DISTINCT session_id FROM file_touches
-         WHERE operation IN ('write','edit') AND file_path LIKE ?
+         WHERE operation IN ('write','edit')
+           AND touch_source = 'native'
+           AND file_path LIKE ?
        )
        ORDER BY s.modified DESC
        LIMIT ?`,
@@ -213,11 +267,19 @@ export function getRecentByEditedPath(
 export function filesTouched(
   db: DatabaseSync,
   pattern: string,
-): { sessionId: string; filePath: string; operation: string; projectPath: string; summary: string | null }[] {
+): {
+  sessionId: string;
+  filePath: string;
+  operation: string;
+  source: string;
+  projectPath: string;
+  summary: string | null;
+}[] {
   const like = pattern.includes("%") ? pattern : `%${pattern}%`;
   return db
     .prepare(
       `SELECT DISTINCT ft.session_id AS sessionId, ft.file_path AS filePath, ft.operation,
+              ft.touch_source AS source,
               s.project_path AS projectPath, s.summary
        FROM file_touches ft JOIN sessions s ON s.id = ft.session_id
        WHERE ft.file_path LIKE ?
@@ -228,6 +290,7 @@ export function filesTouched(
     sessionId: string;
     filePath: string;
     operation: string;
+    source: string;
     projectPath: string;
     summary: string | null;
   }[];
