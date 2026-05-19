@@ -15,6 +15,7 @@ import {
   getRecent,
   filesTouched,
   getRepoBreakdown,
+  sessionCategoryBreakdown,
   type SearchHit,
   type SessionRow,
 } from "../queries.js";
@@ -232,6 +233,19 @@ export function handleCategories(_req: IncomingMessage, res: ServerResponse, ctx
     )
     .all() as { category: string; sessions: number; turns: number }[];
   sendJson(res, 200, { categories: rows });
+}
+
+// Per-session category breakdown. Mirrors the sessionCategoryBreakdown MCP
+// tool over HTTP so the detail rail can render a session's "shape" bar
+// without going through MCP plumbing. Empty array is a valid response for
+// sessions indexed before the v4 classifier migration.
+export function handleSessionCategories(_req: IncomingMessage, res: ServerResponse, ctx: RouteCtx, id: string): void {
+  if (!id || !/^[A-Za-z0-9._\-]+$/.test(id)) {
+    sendJson(res, 400, { error: "invalid session id" });
+    return;
+  }
+  const breakdown = sessionCategoryBreakdown(ctx.db, id);
+  sendJson(res, 200, { sessionId: id, breakdown });
 }
 
 // Repo activity for the dashboard's Repos panel. One row per src-root-

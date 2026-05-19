@@ -269,7 +269,11 @@ button[aria-pressed="true"] {
 .dashboard .grid {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(360px, 2fr);
-  grid-template-rows: auto 1fr auto;
+  /* minmax on row 2 prevents the middle (repos/categories/sessions) row
+     from collapsing to 0 when the detail rail opens. Without it, grid's
+     auto track sizing gives row 3 all the leftover space because the
+     middle panels have min-height:0 from .panel. */
+  grid-template-rows: auto minmax(240px, 1fr) auto;
   grid-template-areas:
     "activity   activity   activity"
     "repos      categories sessions"
@@ -404,6 +408,95 @@ body.dashboard { grid-template-rows: 48px 1fr 24px; }
 .lane-category[data-selected="1"] {
   border-color: var(--badge-codex);
 }
+
+/* ---------------------------------------------------------------------
+ * Scope summary (draft 5) — pills above the result list showing which
+ * heatmap day / repo lane / category lane is currently filtering. Each
+ * pill has an inline × button to clear that single dimension. Hidden
+ * when nothing is filtered.
+ * --------------------------------------------------------------------- */
+
+.scope-summary { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 0; }
+.scope-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono); font-size: 11px;
+  padding: 2px 6px 2px 8px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; color: var(--text-primary);
+}
+.scope-pill-clear {
+  background: transparent; border: none; color: var(--text-muted);
+  font-size: 14px; line-height: 1; padding: 0 4px;
+  cursor: pointer;
+}
+.scope-pill-clear:hover { color: var(--error); }
+.scope-pill-clear-all {
+  background: transparent; color: var(--text-muted);
+  cursor: pointer; border: 1px dashed var(--border);
+  padding: 2px 10px;
+}
+.scope-pill-clear-all:hover { color: var(--text-primary); border-color: var(--text-muted); }
+
+/* ---------------------------------------------------------------------
+ * Detail rail shape bar (draft 5) — stacked segments showing the open
+ * session's category mix. Reuses badge colors for legend swatches via
+ * data-category. Falls back invisibly when the session has no
+ * categorized turns (pre-v4 sessions that haven't been reindexed).
+ * --------------------------------------------------------------------- */
+
+.detail-shape { padding: 0 0 8px; }
+.detail-shape-bar {
+  display: flex; width: 100%; height: 8px;
+  border-radius: 4px; overflow: hidden; background: var(--surface-2);
+}
+.detail-shape-seg {
+  display: block; height: 100%;
+  background: var(--text-muted);
+  border-right: 1px solid var(--bg);
+}
+.detail-shape-seg:last-child { border-right: none; }
+/* Category-specific colors. Conversation/exploration/brainstorming kept
+   muted (chat-flavored); code-work categories get distinct accents so the
+   bar reads "how much real work vs chatter" at a glance. */
+.detail-shape-seg[data-category="conversation"]  { background: var(--text-muted); opacity: 0.5; }
+.detail-shape-seg[data-category="brainstorming"] { background: var(--text-muted); opacity: 0.7; }
+.detail-shape-seg[data-category="exploration"]   { background: var(--badge-codex); opacity: 0.6; }
+.detail-shape-seg[data-category="planning"]      { background: var(--warning); opacity: 0.7; }
+.detail-shape-seg[data-category="delegation"]    { background: var(--badge-claude); }
+.detail-shape-seg[data-category="coding"]        { background: var(--accent); }
+.detail-shape-seg[data-category="feature"]       { background: var(--accent); opacity: 0.8; }
+.detail-shape-seg[data-category="refactoring"]   { background: var(--accent); opacity: 0.65; }
+.detail-shape-seg[data-category="debugging"]     { background: var(--error); opacity: 0.8; }
+.detail-shape-seg[data-category="testing"]       { background: var(--badge-gemini); opacity: 0.9; }
+.detail-shape-seg[data-category="git"]           { background: var(--badge-claude); opacity: 0.7; }
+.detail-shape-seg[data-category="build/deploy"]  { background: var(--badge-gemini); opacity: 0.6; }
+.detail-shape-seg[data-category="general"]       { background: var(--text-muted); opacity: 0.3; }
+
+.detail-shape-legend {
+  list-style: none; margin: 6px 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 8px 12px;
+}
+.detail-shape-legend li {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+}
+.detail-shape-legend .legend-swatch {
+  display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  background: var(--text-muted);
+}
+.detail-shape-legend li[data-category="conversation"]  .legend-swatch { background: var(--text-muted); opacity: 0.5; }
+.detail-shape-legend li[data-category="brainstorming"] .legend-swatch { background: var(--text-muted); opacity: 0.7; }
+.detail-shape-legend li[data-category="exploration"]   .legend-swatch { background: var(--badge-codex); opacity: 0.6; }
+.detail-shape-legend li[data-category="planning"]      .legend-swatch { background: var(--warning); opacity: 0.7; }
+.detail-shape-legend li[data-category="delegation"]    .legend-swatch { background: var(--badge-claude); }
+.detail-shape-legend li[data-category="coding"]        .legend-swatch { background: var(--accent); }
+.detail-shape-legend li[data-category="feature"]       .legend-swatch { background: var(--accent); opacity: 0.8; }
+.detail-shape-legend li[data-category="refactoring"]   .legend-swatch { background: var(--accent); opacity: 0.65; }
+.detail-shape-legend li[data-category="debugging"]     .legend-swatch { background: var(--error); opacity: 0.8; }
+.detail-shape-legend li[data-category="testing"]       .legend-swatch { background: var(--badge-gemini); opacity: 0.9; }
+.detail-shape-legend li[data-category="git"]           .legend-swatch { background: var(--badge-claude); opacity: 0.7; }
+.detail-shape-legend li[data-category="build/deploy"]  .legend-swatch { background: var(--badge-gemini); opacity: 0.6; }
+.detail-shape-legend .legend-count { color: var(--text-primary); }
 
 .hint { font-size: 11px; color: var(--text-muted); padding: 0 16px; }
 

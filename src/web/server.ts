@@ -22,6 +22,7 @@ import {
   handleRoot,
   handleSearch,
   handleSession,
+  handleSessionCategories,
   handleStatic,
   handleStatus,
   sendJson,
@@ -116,6 +117,13 @@ export function startWebServer(opts: WebServerOptions): Promise<WebServerHandle>
       }
       if (path === "/api/sessions/recent") {
         handleRecent(req, res, ctx, url);
+        return;
+      }
+      if (path.startsWith("/api/sessions/") && path.endsWith("/categories")) {
+        const id = decodeURIComponent(
+          path.slice("/api/sessions/".length, -"/categories".length),
+        );
+        handleSessionCategories(req, res, ctx, id);
         return;
       }
       if (path.startsWith("/api/sessions/")) {

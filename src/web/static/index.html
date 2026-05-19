@@ -72,7 +72,7 @@
               placeholder="Search message content (FTS5; rare terms work best)…"
               spellcheck="false"
             />
-            <div class="filters" role="group" aria-label="Filters">
+            <div class="filters" role="group" aria-label="Filter by client">
               <button type="button" class="chip" data-client="" aria-pressed="true">all</button>
               <button type="button" class="chip" data-client="claude_code" aria-pressed="false">claude_code</button>
               <button type="button" class="chip" data-client="codex" aria-pressed="false">codex</button>
@@ -80,15 +80,12 @@
               <span class="chip-sep"></span>
               <button type="button" class="chip" id="recent-toggle" aria-pressed="true">recent</button>
             </div>
-            <div
-              id="category-filters"
-              class="filters"
-              role="group"
-              aria-label="Filter by turn category"
-            >
-              <button type="button" class="chip" data-category="" aria-pressed="true">any kind</button>
-              <!-- category chips injected by app.js after /api/categories returns -->
-            </div>
+            <!-- Active scope summary: pills showing day/repo/category filters
+                 applied by clicking the visualization panels. Each pill has
+                 an × to clear that single dimension. Hidden when no filters
+                 active. The category chip row that used to live here was
+                 removed in draft 5 — Categories panel is the new source. -->
+            <div id="scope-summary" class="scope-summary" hidden aria-label="Active scope"></div>
           </form>
           <ol id="search-results" class="result-list" aria-label="Search results"></ol>
         </div>

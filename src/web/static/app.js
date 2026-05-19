@@ -267,6 +267,9 @@ async function openDetail(sessionId) {
   detailTitle.textContent = sessionId;
   detailMeta.textContent = "Loading…";
   detailList.innerHTML = "";
+  // Remove any prior shape bar so we don't show stale data while loading.
+  const oldShape = document.getElementById("detail-shape");
+  if (oldShape) oldShape.remove();
   currentSession = sessionId;
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
@@ -278,10 +281,58 @@ async function openDetail(sessionId) {
     detailMeta.textContent =
       `${s.client || "?"} · ${basename(s.projectPath || "")} · ` +
       `${s.messageCount ?? "?"} messages · ${(s.modified || "").slice(0, 16).replace("T", " ")}`;
+    renderDetailShape(sessionId);
     renderDetailTab(currentTab);
     detailTitle.focus?.();
   } catch (err) {
     detailMeta.textContent = `Could not load session: ${err.message}`;
+  }
+}
+
+// Stacked-bar visualization of one session's category mix, rendered into
+// the detail rail. Uses session_category_breakdown surface — same SQL as
+// the MCP tool of the same name. Each segment is proportional to that
+// category's turn count. Hover shows category + count via title attr.
+async function renderDetailShape(sessionId) {
+  // The MCP tool exists; the web layer doesn't expose it as its own route
+  // yet. Reach into the same SQL by riding /api/sessions/:id detail (which
+  // doesn't include it) and falling back to a small inline aggregate over
+  // the messages we already have. Add a dedicated route later if this gets
+  // heavy use.
+  //
+  // For now: hit a small new endpoint added in this draft.
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/categories`);
+    if (!r.ok) return;
+    const j = await r.json();
+    const breakdown = Array.isArray(j.breakdown) ? j.breakdown : [];
+    if (breakdown.length === 0) return;
+    const total = breakdown.reduce((s, b) => s + b.turns, 0);
+    if (total === 0) return;
+    const wrap = document.createElement("div");
+    wrap.id = "detail-shape";
+    wrap.className = "detail-shape";
+    const bar = document.createElement("div");
+    bar.className = "detail-shape-bar";
+    const legend = document.createElement("ul");
+    legend.className = "detail-shape-legend";
+    for (const b of breakdown) {
+      const seg = document.createElement("span");
+      seg.className = "detail-shape-seg";
+      seg.dataset.category = b.category;
+      seg.style.flexGrow = String(b.turns);
+      seg.title = `${b.category}: ${b.turns} turn${b.turns === 1 ? "" : "s"}`;
+      bar.appendChild(seg);
+
+      const li = document.createElement("li");
+      li.dataset.category = b.category;
+      li.innerHTML = `<span class="legend-swatch"></span><span>${escapeHtml(b.category)}</span><span class="legend-count">${b.turns}</span>`;
+      legend.appendChild(li);
+    }
+    wrap.append(bar, legend);
+    detailMeta.after(wrap);
+  } catch {
+    /* shape is decorative; never break detail load */
   }
 }
 
@@ -338,51 +389,19 @@ document.querySelectorAll(".filters .chip[data-client]").forEach((btn) => {
   });
 });
 
-// Category chips: the "any kind" chip is static; the rest are injected after
-// /api/categories returns. Delegated handler picks up both static and dynamic.
-const categoryFiltersEl = document.getElementById("category-filters");
+// Category state. Draft 5 removed the chip row in the Sessions panel — the
+// Categories panel is now the canonical UI for setting activeCategory.
+// Lane-click handler in loadCategoryLanes() calls this; scope-summary
+// pills (below) call it with "" to clear.
 function setActiveCategory(value) {
   activeCategory = value;
   persist.set("activeCategory", value);
-  for (const b of categoryFiltersEl.querySelectorAll(".chip")) {
-    b.setAttribute("aria-pressed", String((b.dataset.category || "") === value));
+  // Sync category-lane selection state if the panel is already rendered.
+  for (const l of document.querySelectorAll("#categories-canvas .lane")) {
+    if (value && l.dataset.category === value) l.setAttribute("data-selected", "1");
+    else l.removeAttribute("data-selected");
   }
-}
-categoryFiltersEl.addEventListener("click", (e) => {
-  const btn = e.target.closest(".chip[data-category]");
-  if (!btn) return;
-  setActiveCategory(btn.dataset.category || "");
-  const q = searchInput.value.trim();
-  if (q) runSearch(q);
-  else loadRecent();
-});
-
-async function loadCategoryChips() {
-  try {
-    const r = await fetch("/api/categories");
-    if (!r.ok) return;
-    const j = await r.json();
-    const cats = Array.isArray(j.categories) ? j.categories : [];
-    // Keep the static "any kind" chip first; rebuild the rest from the API
-    // response, preserving DESC ordering from the backend.
-    for (const b of categoryFiltersEl.querySelectorAll(".chip[data-category]:not([data-category=''])")) {
-      b.remove();
-    }
-    for (const c of cats) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "chip";
-      btn.dataset.category = c.category;
-      btn.setAttribute("aria-pressed", String(c.category === activeCategory));
-      btn.textContent = `${c.category} (${c.sessions})`;
-      categoryFiltersEl.appendChild(btn);
-    }
-    // Sync the "any kind" chip's pressed state too.
-    const anyChip = categoryFiltersEl.querySelector(".chip[data-category='']");
-    if (anyChip) anyChip.setAttribute("aria-pressed", String(activeCategory === ""));
-  } catch {
-    /* leave chips empty if endpoint missing — v3 DBs that haven't been rebuilt */
-  }
+  renderScopeSummary();
 }
 
 document.getElementById("recent-toggle").addEventListener("click", (e) => {
@@ -488,10 +507,59 @@ function setScopeDay(iso) {
   // Re-render heatmap so the selected cell shows the highlight, and refetch
   // the session list with the new filter.
   loadHeatmap();
+  renderScopeSummary();
   const q = searchInput.value.trim();
   if (q) runSearch(q);
   else loadRecent();
 }
+
+// Active filter summary above the result list. One pill per non-default
+// scope dimension; each pill has an × button to clear that dimension.
+// Hidden when nothing's filtered. Replaces the old category-chip row.
+function renderScopeSummary() {
+  const el = document.getElementById("scope-summary");
+  if (!el) return;
+  const pills = [];
+  if (scopeDay) pills.push({ key: "day", label: `day: ${scopeDay}` });
+  if (scopeRepo) {
+    const name = scopeRepo.split("/").pop() || scopeRepo;
+    pills.push({ key: "repo", label: `repo: ${name}` });
+  }
+  if (activeCategory) pills.push({ key: "category", label: `category: ${activeCategory}` });
+  if (pills.length === 0) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  el.hidden = false;
+  const parts = [];
+  for (const p of pills) {
+    parts.push(
+      `<span class="scope-pill" data-scope-key="${p.key}">`,
+      `<span>${escapeHtml(p.label)}</span>`,
+      `<button type="button" class="scope-pill-clear" data-scope-key="${p.key}" aria-label="Clear ${p.key} filter">×</button>`,
+      `</span>`,
+    );
+  }
+  parts.push(
+    `<button type="button" class="scope-pill scope-pill-clear-all" data-scope-key="all">clear all</button>`,
+  );
+  el.innerHTML = parts.join("");
+}
+
+document.getElementById("scope-summary").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-scope-key]");
+  if (!btn) return;
+  const key = btn.dataset.scopeKey;
+  if (key === "day" || key === "all") setScopeDay("");
+  if (key === "repo" || key === "all") setScopeRepo("");
+  if (key === "category" || key === "all") {
+    setActiveCategory("");
+    const q = searchInput.value.trim();
+    if (q) runSearch(q);
+    else loadRecent();
+  }
+});
 
 function setScopeRange(label) {
   if (!(label in SCOPE_DAYS_BY_LABEL)) return;
@@ -568,6 +636,7 @@ function setScopeRepo(repo) {
     if (scopeRepo && lane.dataset.repo === scopeRepo) lane.setAttribute("data-selected", "1");
     else lane.removeAttribute("data-selected");
   }
+  renderScopeSummary();
   const q = searchInput.value.trim();
   if (q) runSearch(q);
   else loadRecent();
@@ -687,14 +756,13 @@ for (const b of document.querySelectorAll(".topbar-scope .chip[data-scope]")) {
 connectFeed();
 pollStatus();
 setInterval(pollStatus, 5000);
-loadCategoryChips();
 loadCategoryLanes();
 loadHeatmap();
 loadRepoLanes();
+renderScopeSummary();
 // Refresh viz panels every 60s so they reflect new indexing activity.
 setInterval(() => {
   loadHeatmap();
-  loadCategoryChips();
   loadCategoryLanes();
   loadRepoLanes();
 }, 60_000);
