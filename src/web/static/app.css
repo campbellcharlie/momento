@@ -230,6 +230,29 @@ button[aria-pressed="true"] {
   margin: 0 4px;
 }
 
+/* Category chip row sits directly under the client filter row; visually
+   subordinate (lighter chip text) so it reads as a secondary axis. */
+#category-filters {
+  padding: 0 16px 6px;
+}
+#category-filters .chip {
+  font-size: 10.5px;
+  opacity: 0.85;
+}
+#category-filters .chip[aria-pressed="true"] {
+  opacity: 1;
+}
+
+/* Topbar sparkline — fills available height in the status pill row. Uses
+   currentColor so it inherits whichever accent the theme provides. */
+.sparkline {
+  width: 96px;
+  height: 20px;
+  color: var(--accent, currentColor);
+  display: inline-block;
+  vertical-align: middle;
+}
+
 .hint { font-size: 11px; color: var(--text-muted); padding: 0 16px; }
 
 .detail {

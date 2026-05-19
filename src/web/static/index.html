@@ -13,6 +13,14 @@
         <span id="feed-pill" class="pill pill-muted" data-state="unknown">feed: connecting…</span>
         <span id="uptime-pill" class="pill pill-muted">uptime: 0s</span>
         <span id="count-pill" class="pill pill-muted">sessions: 0</span>
+        <svg
+          id="activity-sparkline"
+          class="sparkline"
+          viewBox="0 0 120 24"
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="Sessions per day, last 14 days"
+        ></svg>
       </div>
     </header>
 
@@ -60,6 +68,15 @@
             <button type="button" class="chip" data-client="gemini" aria-pressed="false">gemini</button>
             <span class="chip-sep"></span>
             <button type="button" class="chip" id="recent-toggle" aria-pressed="true">recent</button>
+          </div>
+          <div
+            id="category-filters"
+            class="filters"
+            role="group"
+            aria-label="Filter by turn category"
+          >
+            <button type="button" class="chip" data-category="" aria-pressed="true">any kind</button>
+            <!-- category chips injected by app.js after /api/categories returns -->
           </div>
           <span id="search-hint" class="hint">Empty query = recent sessions.</span>
         </form>

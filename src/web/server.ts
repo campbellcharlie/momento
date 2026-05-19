@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { EventBus } from "./events.js";
 import { IndexWatcher } from "./watcher.js";
 import {
+  handleActivity,
+  handleCategories,
   handleFeed,
   handleFiles,
   handleFind,
@@ -130,6 +132,14 @@ export function startWebServer(opts: WebServerOptions): Promise<WebServerHandle>
       }
       if (path === "/api/files") {
         handleFiles(req, res, ctx, url);
+        return;
+      }
+      if (path === "/api/categories") {
+        handleCategories(req, res, ctx);
+        return;
+      }
+      if (path === "/api/activity") {
+        handleActivity(req, res, ctx, url);
         return;
       }
       sendJson(res, 404, { error: "not found", path });

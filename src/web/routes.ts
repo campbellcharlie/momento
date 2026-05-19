@@ -182,9 +182,57 @@ export function handleRecent(_req: IncomingMessage, res: ServerResponse, ctx: Ro
   const n = clamp(parseInt(getQuery(url, "n", "200"), 10), 1, 5000);
   const projectPath = getQuery(url, "project_path");
   const client = getQuery(url, "client");
+  const category = getQuery(url, "category");
   let rows = getRecent(ctx.db, n, projectPath || undefined);
   if (client) rows = rows.filter((r) => r.client === client);
+  if (category) {
+    // Intersect with sessions that have at least one turn of the requested
+    // category. Cheap subquery; turn_categories.category is indexed.
+    const ids = new Set(
+      (
+        ctx.db
+          .prepare(`SELECT DISTINCT session_id FROM turn_categories WHERE category = ?`)
+          .all(category) as { session_id: string }[]
+      ).map((r) => r.session_id),
+    );
+    rows = rows.filter((r) => ids.has(r.id));
+  }
   sendJson(res, 200, { sessions: rows });
+}
+
+// Distribution of turn categories across the indexed corpus. Powers the
+// chip row in the UI: each chip shows how many distinct sessions contain
+// at least one turn of that category. Sessions older than the v4 schema
+// migration won't contribute until reindexed.
+export function handleCategories(_req: IncomingMessage, res: ServerResponse, ctx: RouteCtx): void {
+  const rows = ctx.db
+    .prepare(
+      `SELECT category,
+              COUNT(DISTINCT session_id) AS sessions,
+              COUNT(*) AS turns
+       FROM turn_categories
+       GROUP BY category
+       ORDER BY sessions DESC`,
+    )
+    .all() as { category: string; sessions: number; turns: number }[];
+  sendJson(res, 200, { categories: rows });
+}
+
+// Sessions-per-day timeline for the topbar sparkline. Defaults to 14 days
+// to match the hook's recency half-life; capped at 90 to keep the response
+// tiny and bounded.
+export function handleActivity(_req: IncomingMessage, res: ServerResponse, ctx: RouteCtx, url: URL): void {
+  const days = clamp(parseInt(getQuery(url, "days", "14"), 10), 1, 90);
+  const rows = ctx.db
+    .prepare(
+      `SELECT date(created) AS day, COUNT(*) AS n
+       FROM sessions
+       WHERE created IS NOT NULL AND created >= datetime('now', '-' || ? || ' days')
+       GROUP BY day
+       ORDER BY day ASC`,
+    )
+    .all(days) as { day: string; n: number }[];
+  sendJson(res, 200, { days, points: rows });
 }
 
 interface SessionDetail {
@@ -244,12 +292,23 @@ export function handleSearch(_req: IncomingMessage, res: ServerResponse, ctx: Ro
   const q = getQuery(url, "q");
   const limit = clamp(parseInt(getQuery(url, "limit", "200"), 10), 1, 2000);
   const client = getQuery(url, "client");
+  const category = getQuery(url, "category");
   if (!q) {
     sendJson(res, 200, { query: "", hits: [] });
     return;
   }
   let hits: SearchHit[] = fts_search(ctx.db, q, { limit });
   if (client) hits = hits.filter((h) => h.client === client);
+  if (category) {
+    const ids = new Set(
+      (
+        ctx.db
+          .prepare(`SELECT DISTINCT session_id FROM turn_categories WHERE category = ?`)
+          .all(category) as { session_id: string }[]
+      ).map((r) => r.session_id),
+    );
+    hits = hits.filter((h) => ids.has(h.sessionId));
+  }
   sendJson(res, 200, { query: q, hits });
 }
 
