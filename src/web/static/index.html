@@ -17,6 +17,13 @@
         <button type="button" class="chip" data-scope="all" aria-pressed="false">all</button>
       </div>
       <div class="topbar-status" aria-live="polite">
+        <button
+          id="new-sessions-badge"
+          class="topbar-new-badge"
+          type="button"
+          hidden
+          aria-label="New sessions arrived since page load — click to refresh list"
+        >+0 new</button>
         <span id="feed-pill" class="pill pill-muted" data-state="unknown">feed: connecting…</span>
         <span id="uptime-pill" class="pill pill-muted">uptime: 0s</span>
         <span id="count-pill" class="pill pill-muted">sessions: 0</span>

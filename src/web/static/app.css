@@ -266,6 +266,25 @@ button[aria-pressed="true"] {
 .topbar-scope { display: flex; align-items: center; gap: 6px; }
 .topbar-scope .hint { padding: 0; color: var(--text-muted); font-size: 11px; }
 
+/* "+N new" badge in the topbar — visible whenever the SSE feed has emitted
+   session_indexed events the user hasn't acknowledged yet. Subtle pulse
+   draws the eye without being distracting. */
+.topbar-new-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  border: 1px solid var(--accent);
+  animation: topbar-new-pulse 2s ease-in-out infinite;
+}
+.topbar-new-badge:hover { animation: none; opacity: 0.85; }
+@keyframes topbar-new-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
 .dashboard .grid {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(360px, 2fr);
@@ -290,6 +309,10 @@ button[aria-pressed="true"] {
   background: var(--bg);
   overflow: hidden;
 }
+/* The `display: flex` above overrides the browser's default
+   `[hidden] { display: none }` rule, which kept the detail panel's close
+   button visible at the bottom of every page state. Restore the intent. */
+.panel[hidden] { display: none; }
 
 .panel-header {
   display: flex; align-items: center; justify-content: space-between;

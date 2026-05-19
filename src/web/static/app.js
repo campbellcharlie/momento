@@ -85,7 +85,12 @@ function shorten(s, n = 140) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-// Build a row for the live feed (left pane).
+// Live-feed sessions land in the hidden #feed list (preserved from the
+// pre-dashboard layout so SSE wiring keeps working) and bump the topbar
+// "+N new" badge. Clicking the badge re-fetches the recent list with the
+// current scope and resets the counter.
+let newSessionsSeen = new Set();
+const newBadge = document.getElementById("new-sessions-badge");
 function appendFeedRow(ev) {
   if (paused) return;
   feedEmpty.hidden = true;
@@ -94,24 +99,30 @@ function appendFeedRow(ev) {
   row.className = "event-row";
   row.dataset.id = String(ev.id);
   row.dataset.sessionId = ev.session_id;
-  const time = document.createElement("time");
-  time.textContent = fmtTime(ev.timestamp);
-  const badge = document.createElement("span");
-  badge.className = "badge";
-  badge.dataset.client = ev.client || "";
-  badge.textContent = ev.client || "?";
-  const snippet = document.createElement("span");
-  snippet.className = "snippet";
-  const proj = document.createElement("div");
-  proj.className = "project";
-  proj.textContent = basename(ev.project_path);
-  const text = document.createElement("div");
-  text.textContent = shorten(ev.first_prompt || ev.summary || "(no prompt)");
-  snippet.append(proj, text);
-  row.append(time, badge, snippet);
-  row.addEventListener("click", () => openDetail(ev.session_id));
   feed.prepend(row);
   while (feed.children.length > MAX_FEED_ROWS) feed.lastElementChild.remove();
+  // Topbar badge: increment unless the session is already in the visible
+  // list (e.g. our own active session re-indexing). Hidden until count > 0.
+  if (!newSessionsSeen.has(ev.session_id)) {
+    newSessionsSeen.add(ev.session_id);
+    if (newBadge) {
+      newBadge.hidden = false;
+      newBadge.textContent = `+${newSessionsSeen.size} new`;
+    }
+  }
+}
+
+if (newBadge) {
+  newBadge.addEventListener("click", () => {
+    newSessionsSeen.clear();
+    newBadge.hidden = true;
+    newBadge.textContent = "+0 new";
+    const q = searchInput.value.trim();
+    if (q) runSearch(q);
+    else loadRecent();
+    // Also nudge the heatmap so the new day shows up
+    loadHeatmap();
+  });
 }
 
 pauseBtn.addEventListener("click", () => {
