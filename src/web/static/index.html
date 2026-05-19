@@ -6,95 +6,106 @@
     <title>momento — local session history</title>
     <link rel="stylesheet" href="/static/app.css" />
   </head>
-  <body>
+  <body class="dashboard">
     <header class="topbar" role="banner">
       <h1>momento</h1>
+      <div class="topbar-scope">
+        <span class="hint">scope:</span>
+        <button type="button" class="chip" data-scope="14d" aria-pressed="true">14d</button>
+        <button type="button" class="chip" data-scope="30d" aria-pressed="false">30d</button>
+        <button type="button" class="chip" data-scope="90d" aria-pressed="false">90d</button>
+        <button type="button" class="chip" data-scope="all" aria-pressed="false">all</button>
+      </div>
       <div class="topbar-status" aria-live="polite">
         <span id="feed-pill" class="pill pill-muted" data-state="unknown">feed: connecting…</span>
         <span id="uptime-pill" class="pill pill-muted">uptime: 0s</span>
         <span id="count-pill" class="pill pill-muted">sessions: 0</span>
-        <svg
-          id="activity-sparkline"
-          class="sparkline"
-          viewBox="0 0 120 24"
-          preserveAspectRatio="none"
-          role="img"
-          aria-label="Sessions per day, last 14 days"
-        ></svg>
       </div>
     </header>
 
-    <main class="split" role="main">
-      <section class="pane" aria-labelledby="feed-heading">
-        <header class="pane-header">
-          <h2 id="feed-heading">Live indexed sessions</h2>
-          <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
+    <main class="grid" role="main">
+      <!-- Primary nav: time. Clicking a cell scopes everything below. -->
+      <section class="panel panel-activity" aria-labelledby="panel-activity-h">
+        <header class="panel-header">
+          <h2 id="panel-activity-h">Activity</h2>
+          <span id="activity-summary" class="hint"></span>
         </header>
-        <div id="feed-empty" class="empty">
-          <span class="pulse" aria-hidden="true"></span>
-          <p>Waiting for the indexer to write new sessions…</p>
+        <div id="activity-canvas" class="panel-body">
+          <p class="stub">[draft 1] activity heatmap goes here</p>
         </div>
-        <ol
-          id="feed"
-          class="event-list"
-          role="log"
-          aria-live="polite"
-          aria-relevant="additions"
-          aria-label="Newly indexed sessions"
-          hidden
-        ></ol>
       </section>
 
-      <div class="divider" role="separator" aria-orientation="vertical"></div>
-
-      <section class="pane" aria-labelledby="browse-heading">
-        <header class="pane-header">
-          <h2 id="browse-heading">Search &amp; browse</h2>
+      <!-- Three-up: dimensions left → list right. -->
+      <section class="panel panel-repos" aria-labelledby="panel-repos-h">
+        <header class="panel-header">
+          <h2 id="panel-repos-h">Repos</h2>
         </header>
-        <form id="search-form" class="search" role="search" autocomplete="off">
-          <label for="search-input" class="visually-hidden">Search indexed sessions</label>
-          <input
-            id="search-input"
-            type="search"
-            name="q"
-            placeholder="Search message content (FTS5; rare terms work best)…"
-            aria-describedby="search-hint"
-            spellcheck="false"
-          />
-          <div class="filters" role="group" aria-label="Filters">
-            <button type="button" class="chip" data-client="" aria-pressed="true">all</button>
-            <button type="button" class="chip" data-client="claude_code" aria-pressed="false">claude_code</button>
-            <button type="button" class="chip" data-client="codex" aria-pressed="false">codex</button>
-            <button type="button" class="chip" data-client="gemini" aria-pressed="false">gemini</button>
-            <span class="chip-sep"></span>
-            <button type="button" class="chip" id="recent-toggle" aria-pressed="true">recent</button>
-          </div>
-          <div
-            id="category-filters"
-            class="filters"
-            role="group"
-            aria-label="Filter by turn category"
-          >
-            <button type="button" class="chip" data-category="" aria-pressed="true">any kind</button>
-            <!-- category chips injected by app.js after /api/categories returns -->
-          </div>
-          <span id="search-hint" class="hint">Empty query = recent sessions.</span>
-        </form>
-        <div id="search-status" class="hint" role="status" aria-live="polite"></div>
-        <ol id="search-results" class="result-list" aria-label="Search results"></ol>
-        <section id="detail-panel" class="detail" aria-live="polite" hidden>
-          <header class="detail-header">
-            <h3 id="detail-title"></h3>
-            <button id="detail-close" type="button" aria-label="Close detail">×</button>
-          </header>
-          <p id="detail-meta" class="hint"></p>
-          <div class="detail-tabs" role="tablist">
-            <button type="button" class="tab" data-tab="messages" aria-pressed="true">messages</button>
-            <button type="button" class="tab" data-tab="tools" aria-pressed="false">tools</button>
-            <button type="button" class="tab" data-tab="files" aria-pressed="false">files</button>
-          </div>
-          <ul id="detail-list"></ul>
-        </section>
+        <div id="repos-canvas" class="panel-body">
+          <p class="stub">[draft 1] repo lanes go here</p>
+        </div>
+      </section>
+
+      <section class="panel panel-categories" aria-labelledby="panel-categories-h">
+        <header class="panel-header">
+          <h2 id="panel-categories-h">Categories</h2>
+        </header>
+        <div id="categories-canvas" class="panel-body">
+          <p class="stub">[draft 1] category mix goes here</p>
+        </div>
+      </section>
+
+      <section class="panel panel-sessions" aria-labelledby="panel-sessions-h">
+        <header class="panel-header">
+          <h2 id="panel-sessions-h">Sessions</h2>
+          <span id="search-status" class="hint" role="status" aria-live="polite"></span>
+        </header>
+        <div class="panel-body">
+          <!-- Search form preserved here so existing app.js DOM hooks survive
+               draft 1. Drafts 5-6 will relocate the search affordance and
+               wire it through the dashboard's scope state. -->
+          <form id="search-form" class="search" role="search" autocomplete="off">
+            <label for="search-input" class="visually-hidden">Search indexed sessions</label>
+            <input
+              id="search-input"
+              type="search"
+              name="q"
+              placeholder="Search message content (FTS5; rare terms work best)…"
+              spellcheck="false"
+            />
+            <div class="filters" role="group" aria-label="Filters">
+              <button type="button" class="chip" data-client="" aria-pressed="true">all</button>
+              <button type="button" class="chip" data-client="claude_code" aria-pressed="false">claude_code</button>
+              <button type="button" class="chip" data-client="codex" aria-pressed="false">codex</button>
+              <button type="button" class="chip" data-client="gemini" aria-pressed="false">gemini</button>
+              <span class="chip-sep"></span>
+              <button type="button" class="chip" id="recent-toggle" aria-pressed="true">recent</button>
+            </div>
+            <div
+              id="category-filters"
+              class="filters"
+              role="group"
+              aria-label="Filter by turn category"
+            >
+              <button type="button" class="chip" data-category="" aria-pressed="true">any kind</button>
+              <!-- category chips injected by app.js after /api/categories returns -->
+            </div>
+          </form>
+          <ol id="search-results" class="result-list" aria-label="Search results"></ol>
+        </div>
+      </section>
+
+      <section id="detail-panel" class="panel panel-detail detail" aria-live="polite" hidden>
+        <header class="detail-header panel-header">
+          <h2 id="detail-title"></h2>
+          <button id="detail-close" type="button" aria-label="Close detail">×</button>
+        </header>
+        <p id="detail-meta" class="hint"></p>
+        <div class="detail-tabs" role="tablist">
+          <button type="button" class="tab" data-tab="messages" aria-pressed="true">messages</button>
+          <button type="button" class="tab" data-tab="tools" aria-pressed="false">tools</button>
+          <button type="button" class="tab" data-tab="files" aria-pressed="false">files</button>
+        </div>
+        <ul id="detail-list"></ul>
       </section>
     </main>
 
@@ -102,6 +113,15 @@
       <span id="db-path">db: —</span>
       <span class="muted">momento · 127.0.0.1 only · read-only</span>
     </footer>
+
+    <!-- Live feed UI is collapsed into a future topbar badge (draft 6).
+         These hidden hooks are preserved so app.js's existing SSE wiring
+         doesn't error out during the draft transition. -->
+    <div hidden>
+      <button id="pause-btn" type="button" aria-pressed="false">Pause</button>
+      <div id="feed-empty"></div>
+      <ol id="feed"></ol>
+    </div>
 
     <script src="/static/app.js" type="module"></script>
   </body>

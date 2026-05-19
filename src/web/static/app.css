@@ -253,6 +253,69 @@ button[aria-pressed="true"] {
   vertical-align: middle;
 }
 
+/* ---------------------------------------------------------------------
+ * Dashboard layout (draft 1)
+ *
+ * Replaces the prior two-pane split with a four-panel grid that visualises
+ * the (time × repo × category) shape of the indexed data. Panel content is
+ * stubbed in this draft; subsequent drafts replace each panel-body's stub
+ * with the real visualisation. The session list panel keeps the existing
+ * search form + result list verbatim so app.js's DOM hooks stay valid.
+ * --------------------------------------------------------------------- */
+
+.topbar-scope { display: flex; align-items: center; gap: 6px; }
+.topbar-scope .hint { padding: 0; color: var(--text-muted); font-size: 11px; }
+
+.dashboard .grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(360px, 2fr);
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    "activity   activity   activity"
+    "repos      categories sessions"
+    "detail     detail     detail";
+  gap: 1px;
+  background: var(--border);
+  min-height: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+.panel-header h2 {
+  margin: 0; font-size: 12px; font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.panel-body { flex: 1; overflow: auto; padding: 12px 14px; }
+.panel-body .stub {
+  margin: 0; padding: 24px 0;
+  text-align: center;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted); opacity: 0.6;
+}
+
+.panel-activity   { grid-area: activity;   min-height: 160px; max-height: 220px; }
+.panel-repos      { grid-area: repos; }
+.panel-categories { grid-area: categories; }
+.panel-sessions   { grid-area: sessions; }
+.panel-detail     { grid-area: detail; max-height: 40vh; }
+
+/* Override the body's three-row layout from the prior pane design — the
+   dashboard manages its own internal structure. */
+body.dashboard { grid-template-rows: 48px 1fr 24px; }
+
 .hint { font-size: 11px; color: var(--text-muted); padding: 0 16px; }
 
 .detail {
