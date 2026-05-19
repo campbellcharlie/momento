@@ -49,24 +49,31 @@ npm link  # optional, exposes `momento` and `momento-inject` globally
 
 ## Configure Claude Code
 
-Merge into `~/.claude/settings.json` (don't overwrite — preserve any existing
-`mcpServers` / `hooks` entries):
+One-shot installer that idempotently merges both the MCP server and the
+auto-injection hook into `~/.claude/settings.json`. Re-runs are safe (entries
+deduped by command-string match) and existing unrelated `mcpServers` /
+`hooks` entries are preserved.
+
+```sh
+./bin/momento-install              # install both
+./bin/momento-install --no-hook    # MCP server only
+./bin/momento-install --no-mcp     # auto-inject hook only
+./bin/momento-install --dry-run    # print planned settings.json without writing
+```
+
+A `.bak` of the prior settings is written next to the file before each save,
+and install metadata is recorded at `~/.claude/state/momento-installed`.
+
+### Manual config (alternative)
+
+Merge into `~/.claude/settings.json` by hand — preserve any existing
+`mcpServers` / `hooks` entries:
 
 ```json
 {
   "mcpServers": {
     "momento": { "command": "node", "args": ["/abs/path/to/momento/dist/server.js"] }
-  }
-}
-```
-
-## Optional: auto-injection
-
-Merge a `UserPromptSubmit` hook into the same `settings.json` to surface
-relevant past sessions:
-
-```json
-{
+  },
   "hooks": {
     "UserPromptSubmit": [
       { "command": "node /abs/path/to/momento/dist/cli.js" }
