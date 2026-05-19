@@ -55,26 +55,34 @@ npm link  # optional, exposes `momento` and `momento-inject` globally
 
 > **Node 24+** is required — uses built-in `node:sqlite` (stable in 24, flag-gated in 22).
 
-## Configure The MCP Server
+## Configure Claude Code
+
+One-shot installer that idempotently merges both the MCP server and the
+auto-injection hook into `~/.claude/settings.json`. Re-runs are safe (entries
+deduped by command-string match) and existing unrelated `mcpServers` /
+`hooks` entries are preserved.
+
+```sh
+./bin/momento-install              # install both
+./bin/momento-install --no-hook    # MCP server only
+./bin/momento-install --no-mcp     # auto-inject hook only
+./bin/momento-install --dry-run    # print planned settings.json without writing
+```
+
+A `.bak` of the prior settings is written next to the file before each save,
+and install metadata is recorded at `~/.claude/state/momento-installed`.
+
+### Manual config (other clients)
 
 The MCP server is client-agnostic: point your client at `dist/server.js`.
-Claude Code example:
+For Claude Code, merge by hand into `~/.claude/settings.json` — preserve
+any existing `mcpServers` / `hooks` entries:
 
 ```json
 {
   "mcpServers": {
     "momento": { "command": "node", "args": ["/abs/path/to/momento/dist/server.js"] }
-  }
-}
-```
-
-## Optional: auto-injection
-
-If your client supports a pre-prompt hook, point it at `dist/cli.js`. Claude
-Code example:
-
-```json
-{
+  },
   "hooks": {
     "UserPromptSubmit": [
       { "command": "node /abs/path/to/momento/dist/cli.js" }

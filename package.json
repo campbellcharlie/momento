@@ -14,7 +14,8 @@
     "inject": "node dist/cli.js",
     "dev": "tsc --watch",
     "pretest": "tsc && node -e \"require('fs').cpSync('src/web/static','dist/web/static',{recursive:true})\"",
-    "test": "node --test 'test/*.test.js'"
+    "test": "node --test 'test/*.test.js'",
+    "bench": "tsc && node bench/run.mjs"
   },
   "engines": {
     "node": ">=24"

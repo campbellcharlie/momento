@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { Indexer, defaultSources } from "./indexer.js";
-import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath } from "./queries.js";
+import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown, findByTopicWithRecency } from "./queries.js";
+import { ALL_CATEGORIES } from "./classifier.js";
 import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
 import { startWebServer } from "./web/server.js";
 
@@ -154,6 +155,19 @@ const TOOLS = [
     },
   },
   {
+    name: "find_by_topic_recent",
+    description:
+      "Same keyword search as find_by_topic but fuses a recency lane via Reciprocal Rank Fusion. Recent sessions among relevant matches rank higher; irrelevant fresh sessions are not surfaced (recency only re-ranks within BM25 candidates). Use when there are likely several near-equally-relevant past sessions and the most recent is more useful (e.g. 'how did I configure X' where the answer evolved).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        description: { type: "string" },
+        limit: { type: "number", default: 10 },
+      },
+      required: ["description"],
+    },
+  },
+  {
     name: "get_recent",
     description: "Most recently modified sessions, optionally scoped to a project.",
     inputSchema: {
@@ -184,6 +198,41 @@ const TOOLS = [
         n: { type: "number", default: 20 },
       },
       required: ["path"],
+    },
+  },
+  {
+    name: "find_by_category",
+    description:
+      "Sessions that contain at least one turn classified as the given category. Deterministic classification — no LLM calls. Categories: coding, debugging, feature, refactoring, testing, exploration, planning, delegation, git, build/deploy, conversation, brainstorming, general. Use this to find prior sessions of a specific type (e.g. 'all debugging sessions touching the auth code'). Sessions indexed before the categorization feature was added return empty until reindexed via `momento --rebuild`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        category: {
+          type: "string",
+          enum: [...ALL_CATEGORIES],
+          description: "Turn category to filter on",
+        },
+        limit: { type: "number", default: 20 },
+        project_path: { type: "string", description: "Optional: restrict to one project path" },
+        min_turns: {
+          type: "number",
+          default: 1,
+          description: "Require at least this many matching turns per session (default 1)",
+        },
+      },
+      required: ["category"],
+    },
+  },
+  {
+    name: "session_category_breakdown",
+    description:
+      "Per-session count of turns by category. Returns [{category, turns}, ...] sorted by turn count desc. Use to understand a session's 'shape' — was it mostly debugging, mostly exploration, etc.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string" },
+      },
+      required: ["session_id"],
     },
   },
 ];
@@ -236,6 +285,12 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         String(args.description ?? ""),
         typeof args.limit === "number" ? args.limit : 10,
       );
+    case "find_by_topic_recent":
+      return findByTopicWithRecency(
+        indexer.db,
+        String(args.description ?? ""),
+        typeof args.limit === "number" ? args.limit : 10,
+      );
     case "get_recent":
       return getRecent(
         indexer.db,
@@ -250,6 +305,21 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         String(args.path ?? ""),
         typeof args.n === "number" ? args.n : 20,
       );
+    case "find_by_category": {
+      const category = String(args.category ?? "");
+      if (!ALL_CATEGORIES.includes(category as (typeof ALL_CATEGORIES)[number])) {
+        throw new Error(
+          `unknown category: ${category}. Known: ${ALL_CATEGORIES.join(", ")}`,
+        );
+      }
+      return findByCategory(indexer.db, category, {
+        limit: typeof args.limit === "number" ? args.limit : undefined,
+        projectPath: typeof args.project_path === "string" ? args.project_path : undefined,
+        minTurns: typeof args.min_turns === "number" ? args.min_turns : undefined,
+      });
+    }
+    case "session_category_breakdown":
+      return sessionCategoryBreakdown(indexer.db, String(args.session_id ?? ""));
     default:
       throw new Error(`unknown tool: ${name}`);
   }

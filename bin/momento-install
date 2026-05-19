@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Idempotent installer for momento's Claude Code integration.
+#
+# Wires two things into ~/.claude/settings.json:
+#   1. MCP server entry "momento" -> node <abs>/dist/server.js
+#   2. UserPromptSubmit hook -> node <abs>/dist/cli.js
+#
+# Re-runs are safe: existing entries are deduped by command-string match
+# (so editing this script's path and re-running won't create duplicates,
+# and another tool's hook with a different command stays untouched).
+#
+# Flags:
+#   --dry-run       print the planned settings.json without writing
+#   --no-hook       install the MCP server but skip the auto-injection hook
+#   --no-mcp        install the hook only, skip the MCP server entry
+#   --settings PATH override ~/.claude/settings.json target (for tests)
+#
+# Exit codes:
+#   0  success (or dry-run)
+#   1  precondition failed (missing node, missing build artifacts)
+#   2  invalid argument
+#
+# Patterns lifted from lsp_kit's install.sh — see project_improvements.md.
+
+set -euo pipefail
+
+DRY_RUN=0
+INSTALL_HOOK=1
+INSTALL_MCP=1
+SETTINGS_PATH="${HOME}/.claude/settings.json"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --no-hook) INSTALL_HOOK=0; shift ;;
+    --no-mcp) INSTALL_MCP=0; shift ;;
+    --settings) SETTINGS_PATH="$2"; shift 2 ;;
+    -h|--help)
+      sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+      exit 0 ;;
+    *)
+      echo "momento-install: unknown arg: $1" >&2
+      echo "run with --help for usage" >&2
+      exit 2 ;;
+  esac
+done
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+MOMENTO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+SERVER_JS="$MOMENTO_DIR/dist/server.js"
+CLI_JS="$MOMENTO_DIR/dist/cli.js"
+MERGER="$SCRIPT_DIR/_merge-settings.mjs"
+
+# Build-artifact preconditions. Don't silently install a broken config —
+# fail loud and tell the user to run `npm run build` first.
+if [ "$INSTALL_MCP" = "1" ] && [ ! -f "$SERVER_JS" ]; then
+  echo "momento-install: $SERVER_JS not found. Run 'npm run build' first." >&2
+  exit 1
+fi
+if [ "$INSTALL_HOOK" = "1" ] && [ ! -f "$CLI_JS" ]; then
+  echo "momento-install: $CLI_JS not found. Run 'npm run build' first." >&2
+  exit 1
+fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "momento-install: node not on PATH" >&2
+  exit 1
+fi
+if [ ! -f "$MERGER" ]; then
+  echo "momento-install: missing $MERGER" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$SETTINGS_PATH")"
+
+PLANNED=$(
+  SETTINGS_PATH="$SETTINGS_PATH" \
+  SERVER_JS="$SERVER_JS" \
+  CLI_JS="$CLI_JS" \
+  INSTALL_HOOK="$INSTALL_HOOK" \
+  INSTALL_MCP="$INSTALL_MCP" \
+  node "$MERGER"
+)
+
+if [ "$DRY_RUN" = "1" ]; then
+  echo "# would write to $SETTINGS_PATH:"
+  printf '%s\n' "$PLANNED"
+  exit 0
+fi
+
+# Backup before write — single .bak slot is enough for rollback during the
+# session that ran the installer; older backups are kept by the user's own
+# version control if any.
+if [ -f "$SETTINGS_PATH" ]; then
+  cp "$SETTINGS_PATH" "$SETTINGS_PATH.bak"
+fi
+printf '%s\n' "$PLANNED" > "$SETTINGS_PATH"
+
+# Marker file records install metadata. Future uninstall can read this to
+# know what to remove without re-deriving paths. Not load-bearing —
+# settings.json is the source of truth.
+STATE_DIR="${HOME}/.claude/state"
+STATE_FILE="$STATE_DIR/momento-installed"
+mkdir -p "$STATE_DIR"
+printf 'momento_dir=%s\nserver_js=%s\ncli_js=%s\nhook=%s\nmcp=%s\ninstalled_at=%s\n' \
+  "$MOMENTO_DIR" "$SERVER_JS" "$CLI_JS" "$INSTALL_HOOK" "$INSTALL_MCP" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$STATE_FILE"
+
+echo "momento-install: wrote $SETTINGS_PATH"
+[ -f "$SETTINGS_PATH.bak" ] && echo "momento-install: backup at $SETTINGS_PATH.bak"
+[ "$INSTALL_MCP" = "1" ] && echo "  - mcp server 'momento' -> $SERVER_JS"
+[ "$INSTALL_HOOK" = "1" ] && echo "  - UserPromptSubmit hook -> $CLI_JS"
+echo "momento-install: state recorded at $STATE_FILE"

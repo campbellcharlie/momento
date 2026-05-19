@@ -5,6 +5,7 @@ import { dirname, basename, extname } from "node:path";
 import { cleanFirstPrompt, IndexedSessionMeta } from "./parser.js";
 import { MomentoConfig, loadConfig, projectExcluded } from "./config.js";
 import { ClientName, Source, defaultSources } from "./sources.js";
+import { buildTurns, classifyTurn } from "./classifier.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -44,9 +45,17 @@ CREATE TABLE IF NOT EXISTS file_touches (
   timestamp TEXT,
   touch_source TEXT NOT NULL DEFAULT 'native'
 );
+CREATE TABLE IF NOT EXISTS turn_categories (
+  session_id TEXT NOT NULL,
+  turn_idx INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  timestamp TEXT,
+  PRIMARY KEY (session_id, turn_idx)
+);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_name ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_file_touches_path ON file_touches(file_path);
+CREATE INDEX IF NOT EXISTS idx_turn_categories_category ON turn_categories(category);
 `;
 // idx_sessions_client lives in migrate() so the index isn't built against a
 // table that pre-dates the `client` column. SCHEMA has to be safe to apply
@@ -57,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_file_touches_path ON file_touches(file_path);
 // columns/tables. Migrations are idempotent — they read PRAGMA user_version and
 // ALTER only if needed. Existing rows get sane defaults so the DB is queryable
 // before the first reindex.
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 function migrate(db: DatabaseSync): void {
   const cur = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -72,10 +81,30 @@ function migrate(db: DatabaseSync): void {
     db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_client ON sessions(client)");
   }
   if (cur < 3) {
+    // v3: add file_touches.touch_source column. Probe before ALTER so the
+    // migration stays idempotent.
     const cols = db.prepare("PRAGMA table_info(file_touches)").all() as { name: string }[];
     if (!cols.some((c) => c.name === "touch_source")) {
       db.exec("ALTER TABLE file_touches ADD COLUMN touch_source TEXT NOT NULL DEFAULT 'native'");
     }
+  }
+  if (cur < 4) {
+    // v4: add turn_categories table. SCHEMA above already CREATE IF NOT
+    // EXISTS'd it, so this is the explicit upgrade marker. Existing sessions
+    // stay un-categorized until reindexed (find_by_category just returns
+    // empty for those, never errors).
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS turn_categories (
+        session_id TEXT NOT NULL,
+        turn_idx INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        timestamp TEXT,
+        PRIMARY KEY (session_id, turn_idx)
+      )
+    `);
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_turn_categories_category ON turn_categories(category)",
+    );
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
@@ -104,6 +133,8 @@ export class Indexer {
   private stmtInsTouch!: StatementSync;
   private stmtDelSessFts!: StatementSync;
   private stmtInsSessFts!: StatementSync;
+  private stmtDelTurnCats!: StatementSync;
+  private stmtInsTurnCat!: StatementSync;
 
   constructor(dbPath: string, config?: MomentoConfig) {
     this.db = new DatabaseSync(dbPath);
@@ -147,6 +178,10 @@ export class Indexer {
     this.stmtDelSessFts = this.db.prepare(`DELETE FROM sessions_fts WHERE session_id = ?`);
     this.stmtInsSessFts = this.db.prepare(
       `INSERT INTO sessions_fts(session_id, summary, first_prompt) VALUES (?, ?, ?)`,
+    );
+    this.stmtDelTurnCats = this.db.prepare(`DELETE FROM turn_categories WHERE session_id = ?`);
+    this.stmtInsTurnCat = this.db.prepare(
+      `INSERT INTO turn_categories(session_id, turn_idx, category, timestamp) VALUES (?, ?, ?, ?)`,
     );
   }
 
@@ -228,6 +263,7 @@ export class Indexer {
             this.stmtDelFts.run(id);
             this.stmtDelTools.run(id);
             this.stmtDelTouches.run(id);
+            this.stmtDelTurnCats.run(id);
             this.stmtDelSessFts.run(id);
             this.stmtDelSession.run(id);
             this.db.exec("COMMIT");
@@ -275,11 +311,19 @@ export class Indexer {
     const summary = m.summary ?? null;
     const firstPrompt = cleanFirstPrompt(m.firstPrompt ?? firstUser?.text ?? null);
 
+    // Classify turns once, before the transaction, so any classifier work
+    // happens outside the DB lock. Classification is deterministic and cheap
+    // (~13 regex passes per turn) — total cost is dominated by JSON.parse of
+    // bash input strings, which we already paid in parser.ts.
+    const turns = buildTurns(parsed.messages, parsed.toolCalls);
+    const turnCats = turns.map((t) => classifyTurn(t));
+
     this.db.exec("BEGIN");
     try {
       this.stmtDelFts.run(id);
       this.stmtDelTools.run(id);
       this.stmtDelTouches.run(id);
+      this.stmtDelTurnCats.run(id);
       this.stmtDelSessFts.run(id);
       this.stmtUpsertSession.run({
         id,
@@ -298,6 +342,9 @@ export class Indexer {
       for (const tc of parsed.toolCalls) this.stmtInsTool.run(id, tc.toolName, tc.inputJson, tc.timestamp);
       for (const ft of parsed.filesTouched) {
         this.stmtInsTouch.run(id, ft.filePath, ft.operation, ft.timestamp, ft.source);
+      }
+      for (let i = 0; i < turnCats.length; i++) {
+        this.stmtInsTurnCat.run(id, i, turnCats[i]!, turns[i]!.timestamp);
       }
       this.db.exec("COMMIT");
     } catch (err) {
