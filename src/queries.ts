@@ -55,6 +55,53 @@ function bucketPath(filePath: string): string | null {
   return null;
 }
 
+// Aggregate edit/write activity by repo bucket across the entire index. Used
+// by the dashboard's Repos panel to draw one lane per repo. Sessions whose
+// edits don't bucket under MOMENTO_SRC_ROOTS (e.g. read-only sessions, or
+// edits outside the configured roots) don't contribute — same semantics as
+// topEditedPaths. Returns rows already sorted by session count desc.
+export interface RepoBucket {
+  repo: string;
+  sessions: number;
+  lastModified: string | null;
+}
+
+export function getRepoBreakdown(db: DatabaseSync, limit = 12): RepoBucket[] {
+  // Pull (session, file_path, modified) for native write/edit touches, then
+  // bucket in JS — SQL can't do the SRC_ROOTS prefix-match cleanly. Volume
+  // is bounded by the file_touches table size (a few × number of sessions),
+  // which on a 1k-session corpus is ~10k rows; well under the 50ms hook
+  // budget the rest of the API targets.
+  const rows = db
+    .prepare(
+      `SELECT ft.session_id AS sid, ft.file_path AS filePath, s.modified
+       FROM file_touches ft JOIN sessions s ON s.id = ft.session_id
+       WHERE ft.operation IN ('write','edit')
+         AND ft.touch_source = 'native'`,
+    )
+    .all() as { sid: string; filePath: string; modified: string | null }[];
+
+  // bucket -> { sessions: Set<sid>, lastModified: string | null }
+  const acc = new Map<string, { sessions: Set<string>; lastModified: string | null }>();
+  for (const r of rows) {
+    const bucket = bucketPath(r.filePath);
+    if (!bucket) continue;
+    let entry = acc.get(bucket);
+    if (!entry) {
+      entry = { sessions: new Set(), lastModified: null };
+      acc.set(bucket, entry);
+    }
+    entry.sessions.add(r.sid);
+    if (r.modified && (entry.lastModified === null || r.modified > entry.lastModified)) {
+      entry.lastModified = r.modified;
+    }
+  }
+  return [...acc.entries()]
+    .map(([repo, e]) => ({ repo, sessions: e.sessions.size, lastModified: e.lastModified }))
+    .sort((a, b) => b.sessions - a.sessions)
+    .slice(0, Math.max(1, limit));
+}
+
 function attachTopEditedPaths(db: DatabaseSync, sessions: SessionRow[]): void {
   if (sessions.length === 0) return;
   const placeholders = sessions.map(() => "?").join(",");

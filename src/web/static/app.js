@@ -59,6 +59,9 @@ const SCOPE_DAYS_BY_LABEL = { "14d": 14, "30d": 30, "90d": 90, "all": 730 };
 let scopeRangeLabel = persist.get("scopeRange", "14d");
 if (!(scopeRangeLabel in SCOPE_DAYS_BY_LABEL)) scopeRangeLabel = "14d";
 let scopeDay = persist.get("scopeDay", "");
+// scopeRepo: a bucketed repo path (e.g. "/Volumes/.../src/momento"). Set by
+// clicking a lane in the Repos panel; intersects with all other filters.
+let scopeRepo = persist.get("scopeRepo", "");
 let currentSession = null;
 let currentDetail = null;
 let currentTab = "messages";
@@ -214,6 +217,7 @@ async function loadRecent() {
     if (activeClient) params.set("client", activeClient);
     if (activeCategory) params.set("category", activeCategory);
     if (scopeDay) params.set("day", scopeDay);
+    if (scopeRepo) params.set("repo", scopeRepo);
     const r = await fetch(`/api/sessions/recent?${params}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json();
@@ -234,6 +238,7 @@ async function runSearch(q) {
     const params = new URLSearchParams({ q, limit: "500" });
     if (activeClient) params.set("client", activeClient);
     if (activeCategory) params.set("category", activeCategory);
+    if (scopeRepo) params.set("repo", scopeRepo);
     const r = await fetch(`/api/search?${params}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json();
@@ -510,6 +515,70 @@ document.getElementById("activity-canvas").addEventListener("click", (e) => {
   setScopeDay(cell.dataset.day);
 });
 
+// Repo lanes: one row per top-edited repo bucket, with a bar showing the
+// session count relative to the most-active repo. Click a lane to filter
+// the session list to that repo; click the active lane again to clear.
+async function loadRepoLanes() {
+  const canvas = document.getElementById("repos-canvas");
+  if (!canvas) return;
+  let repos;
+  try {
+    const r = await fetch("/api/repos?limit=12");
+    if (!r.ok) return;
+    const j = await r.json();
+    repos = Array.isArray(j.repos) ? j.repos : [];
+  } catch {
+    return;
+  }
+  if (repos.length === 0) {
+    canvas.innerHTML = `<p class="stub">no repo activity indexed yet</p>`;
+    return;
+  }
+  const max = Math.max(...repos.map((r) => r.sessions), 1);
+  const lines = ['<ul class="lane-list">'];
+  for (const r of repos) {
+    const name = r.repo.split("/").pop() || r.repo;
+    const pct = Math.max(2, Math.round((r.sessions / max) * 100));
+    const selected = scopeRepo === r.repo ? ' data-selected="1"' : "";
+    lines.push(
+      `<li class="lane" data-repo="${escapeAttr(r.repo)}"${selected} title="${escapeAttr(r.repo)} — last active ${(r.lastModified || "").slice(0, 10)}">`,
+      `<span class="lane-name">${escapeHtml(name)}</span>`,
+      `<span class="lane-bar"><span class="lane-bar-fill" style="width:${pct}%"></span></span>`,
+      `<span class="lane-count">${r.sessions}</span>`,
+      `</li>`,
+    );
+  }
+  lines.push("</ul>");
+  canvas.innerHTML = lines.join("");
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function setScopeRepo(repo) {
+  if (scopeRepo === repo) repo = ""; // toggle off
+  scopeRepo = repo;
+  persist.set("scopeRepo", scopeRepo);
+  // Update lane visual state in-place rather than re-fetching the repo list.
+  for (const lane of document.querySelectorAll("#repos-canvas .lane")) {
+    if (scopeRepo && lane.dataset.repo === scopeRepo) lane.setAttribute("data-selected", "1");
+    else lane.removeAttribute("data-selected");
+  }
+  const q = searchInput.value.trim();
+  if (q) runSearch(q);
+  else loadRecent();
+}
+
+document.getElementById("repos-canvas").addEventListener("click", (e) => {
+  const lane = e.target.closest(".lane[data-repo]");
+  if (!lane) return;
+  setScopeRepo(lane.dataset.repo);
+});
+
 document.querySelectorAll(".detail-tabs .tab").forEach((btn) => {
   btn.addEventListener("click", () => renderDetailTab(btn.dataset.tab));
 });
@@ -567,10 +636,12 @@ pollStatus();
 setInterval(pollStatus, 5000);
 loadCategoryChips();
 loadHeatmap();
-// Refresh heatmap + chip counts every 60s. Cheap (two small SELECTs).
+loadRepoLanes();
+// Refresh viz panels every 60s so they reflect new indexing activity.
 setInterval(() => {
   loadHeatmap();
   loadCategoryChips();
+  loadRepoLanes();
 }, 60_000);
 
 if (restoredQuery) runSearch(restoredQuery);

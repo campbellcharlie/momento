@@ -18,6 +18,7 @@ import {
   handleFiles,
   handleFind,
   handleRecent,
+  handleRepos,
   handleRoot,
   handleSearch,
   handleSession,
@@ -140,6 +141,10 @@ export function startWebServer(opts: WebServerOptions): Promise<WebServerHandle>
       }
       if (path === "/api/activity") {
         handleActivity(req, res, ctx, url);
+        return;
+      }
+      if (path === "/api/repos") {
+        handleRepos(req, res, ctx, url);
         return;
       }
       sendJson(res, 404, { error: "not found", path });

@@ -14,6 +14,7 @@ import {
   findByTopicRanked,
   getRecent,
   filesTouched,
+  getRepoBreakdown,
   type SearchHit,
   type SessionRow,
 } from "../queries.js";
@@ -188,6 +189,10 @@ export function handleRecent(_req: IncomingMessage, res: ServerResponse, ctx: Ro
   // on the day it was last active. Validated as a date-shape string before
   // hitting SQL (defense-in-depth; the param goes through a bound `?` too).
   const day = getQuery(url, "day");
+  // repo filter: a bucketed repo root (e.g. "/Volumes/.../src/momento")
+  // intersected against sessions whose topEditedPaths contain it. The
+  // bucket strings come from getRepoBreakdown so the value space matches.
+  const repo = getQuery(url, "repo");
   let rows = getRecent(ctx.db, n, projectPath || undefined);
   if (client) rows = rows.filter((r) => r.client === client);
   if (category) {
@@ -204,6 +209,9 @@ export function handleRecent(_req: IncomingMessage, res: ServerResponse, ctx: Ro
   }
   if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
     rows = rows.filter((r) => (r.modified || "").startsWith(day));
+  }
+  if (repo) {
+    rows = rows.filter((r) => (r.topEditedPaths ?? []).includes(repo));
   }
   sendJson(res, 200, { sessions: rows });
 }
@@ -226,9 +234,19 @@ export function handleCategories(_req: IncomingMessage, res: ServerResponse, ctx
   sendJson(res, 200, { categories: rows });
 }
 
-// Sessions-per-day timeline for the topbar sparkline. Defaults to 14 days
-// to match the hook's recency half-life; capped at 90 to keep the response
-// tiny and bounded.
+// Repo activity for the dashboard's Repos panel. One row per src-root-
+// bucketed repo, ordered by session count desc. Used to power click-to-
+// filter ("show me sessions that edited this repo") and to draw the lane
+// chart in the panel.
+export function handleRepos(_req: IncomingMessage, res: ServerResponse, ctx: RouteCtx, url: URL): void {
+  const limit = clamp(parseInt(getQuery(url, "limit", "12"), 10), 1, 50);
+  const repos = getRepoBreakdown(ctx.db, limit);
+  sendJson(res, 200, { repos });
+}
+
+// Sessions-per-day timeline for the dashboard's Activity heatmap. Defaults
+// to 14 days to match the hook's recency half-life; capped at 730 so the
+// "all" scope still has a sane upper bound.
 export function handleActivity(_req: IncomingMessage, res: ServerResponse, ctx: RouteCtx, url: URL): void {
   // Range capped at 730 days (2 years) so the dashboard's "all" scope still
   // has a sane upper bound — pre-2024 sessions are vanishingly few and a
@@ -304,6 +322,7 @@ export function handleSearch(_req: IncomingMessage, res: ServerResponse, ctx: Ro
   const limit = clamp(parseInt(getQuery(url, "limit", "200"), 10), 1, 2000);
   const client = getQuery(url, "client");
   const category = getQuery(url, "category");
+  const repo = getQuery(url, "repo");
   if (!q) {
     sendJson(res, 200, { query: "", hits: [] });
     return;
@@ -316,6 +335,23 @@ export function handleSearch(_req: IncomingMessage, res: ServerResponse, ctx: Ro
         ctx.db
           .prepare(`SELECT DISTINCT session_id FROM turn_categories WHERE category = ?`)
           .all(category) as { session_id: string }[]
+      ).map((r) => r.session_id),
+    );
+    hits = hits.filter((h) => ids.has(h.sessionId));
+  }
+  if (repo) {
+    // Session IDs whose native edits bucket under this repo. Cheap subquery
+    // — file_path is indexed and LIKE prefix matches stay in the index.
+    const like = `${repo}/%`;
+    const ids = new Set(
+      (
+        ctx.db
+          .prepare(
+            `SELECT DISTINCT session_id FROM file_touches
+             WHERE operation IN ('write','edit') AND touch_source = 'native'
+               AND file_path LIKE ?`,
+          )
+          .all(like) as { session_id: string }[]
       ).map((r) => r.session_id),
     );
     hits = hits.filter((h) => ids.has(h.sessionId));

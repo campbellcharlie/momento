@@ -343,6 +343,59 @@ body.dashboard { grid-template-rows: 48px 1fr 24px; }
   stroke-width: 2;
 }
 
+/* ---------------------------------------------------------------------
+ * Repo lanes (draft 3)
+ *
+ * One row per top-edited repo. Layout: name | bar | count. Bar fill is
+ * proportional to the most-active repo's session count, with a 2% floor
+ * so quiet repos still show a sliver. Click toggles the scope filter.
+ * --------------------------------------------------------------------- */
+
+.lane-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.lane {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.6fr) 1fr 32px;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.lane:hover { background: var(--surface-1); }
+.lane[data-selected="1"] {
+  background: var(--surface-2);
+  border-color: var(--accent);
+}
+.lane-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lane-bar {
+  display: block;
+  height: 10px;
+  background: var(--surface-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.lane-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  opacity: 0.7;
+}
+.lane[data-selected="1"] .lane-bar-fill { opacity: 1; }
+.lane-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
 .hint { font-size: 11px; color: var(--text-muted); padding: 0 16px; }
 
 .detail {
