@@ -52,6 +52,13 @@ let paused = false;
 let activeClient = persist.get("activeClient", "");
 let activeCategory = persist.get("activeCategory", "");
 let recentMode = persist.get("recentMode", "1") !== "0";
+// Dashboard scope: drives the activity heatmap range AND the session list
+// filter. `scopeDays` is the heatmap window; `scopeDay` is an optional
+// exact-day filter (set when the user clicks a heatmap cell). Both persist.
+const SCOPE_DAYS_BY_LABEL = { "14d": 14, "30d": 30, "90d": 90, "all": 730 };
+let scopeRangeLabel = persist.get("scopeRange", "14d");
+if (!(scopeRangeLabel in SCOPE_DAYS_BY_LABEL)) scopeRangeLabel = "14d";
+let scopeDay = persist.get("scopeDay", "");
 let currentSession = null;
 let currentDetail = null;
 let currentTab = "messages";
@@ -206,6 +213,7 @@ async function loadRecent() {
     const params = new URLSearchParams({ n: "2000" });
     if (activeClient) params.set("client", activeClient);
     if (activeCategory) params.set("category", activeCategory);
+    if (scopeDay) params.set("day", scopeDay);
     const r = await fetch(`/api/sessions/recent?${params}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json();
@@ -381,43 +389,126 @@ document.getElementById("recent-toggle").addEventListener("click", (e) => {
   if (!recentMode && !q) { searchResults.innerHTML = ""; searchStatus.textContent = ""; }
 });
 
-// SVG sparkline of sessions-per-day. ViewBox 120x24; pad 1px so the bottom-
-// most line draws inside the box. Linear path from oldest (left) to newest
-// (right). Empty data → blank box, no error.
-async function loadSparkline() {
-  const el = document.getElementById("activity-sparkline");
-  if (!el) return;
+// Calendar-style activity heatmap. GitHub-contribution-graph layout: each
+// column = one week, each row = one weekday (Sun-Sat). Cells colored by
+// session count, bucketed into 5 intensity steps. Click a cell to scope the
+// session list to that single day; click the same cell again (or "All" in
+// the topbar) to clear the day filter.
+//
+// Vanilla SVG so it inherits the existing zero-deps frontend posture.
+async function loadHeatmap() {
+  const canvas = document.getElementById("activity-canvas");
+  if (!canvas) return;
+  const days = SCOPE_DAYS_BY_LABEL[scopeRangeLabel] || 14;
+  let pts;
   try {
-    const r = await fetch("/api/activity?days=14");
+    const r = await fetch(`/api/activity?days=${days}`);
     if (!r.ok) return;
     const j = await r.json();
-    const pts = Array.isArray(j.points) ? j.points : [];
-    if (pts.length === 0) {
-      el.innerHTML = "";
-      return;
-    }
-    const max = Math.max(...pts.map((p) => p.n), 1);
-    const W = 120, H = 24, PAD = 1;
-    const xStep = pts.length > 1 ? (W - 2 * PAD) / (pts.length - 1) : 0;
-    const coords = pts.map((p, i) => {
-      const x = PAD + i * xStep;
-      const y = H - PAD - ((H - 2 * PAD) * p.n) / max;
-      return [x, y];
-    });
-    const linePath = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`).join(" ");
-    const areaPath = linePath + ` L${(PAD + (pts.length - 1) * xStep).toFixed(2)},${H - PAD} L${PAD},${H - PAD} Z`;
-    el.innerHTML = `
-      <path d="${areaPath}" fill="currentColor" fill-opacity="0.15" stroke="none"/>
-      <path d="${linePath}" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/>
-    `;
-    el.setAttribute(
-      "aria-label",
-      `Sessions per day, last ${pts.length} day${pts.length === 1 ? "" : "s"}; peak ${max}`,
-    );
+    pts = Array.isArray(j.points) ? j.points : [];
   } catch {
-    /* sparkline is decorative — don't surface errors */
+    return; // heatmap is recoverable; just leave the previous render
+  }
+  // Build a date → count map for O(1) lookup while we walk the calendar grid.
+  const counts = new Map(pts.map((p) => [p.day, p.n]));
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  // Anchor the rightmost column on the week containing `today`. Walk back
+  // `days` days from today; align to Sunday so weeks render as clean
+  // columns. Each cell stores its YYYY-MM-DD key in data-day.
+  const start = new Date(today.getTime() - (days - 1) * 86400000);
+  // Move start back to the nearest prior Sunday so the grid starts on a
+  // week boundary.
+  start.setDate(start.getDate() - start.getDay());
+  const totalDays = Math.ceil((today.getTime() - start.getTime()) / 86400000) + 1;
+  const weeks = Math.ceil(totalDays / 7);
+  const max = pts.reduce((m, p) => (p.n > m ? p.n : m), 0);
+  // Bucket thresholds — relative to the visible max so a quiet week still
+  // shows variation. With max < 1, all cells are empty.
+  const bucket = (n) => {
+    if (!n || max === 0) return 0;
+    const r = n / max;
+    if (r >= 0.75) return 4;
+    if (r >= 0.5) return 3;
+    if (r >= 0.25) return 2;
+    return 1;
+  };
+  const CELL = 12, GAP = 3;
+  const W = weeks * (CELL + GAP) + GAP;
+  const H = 7 * (CELL + GAP) + GAP;
+  // Render at native pixel size — the heatmap is meant to be 12px-per-day
+  // dense, not stretched to fill the panel. CSS `width:auto` + the explicit
+  // width/height attributes keep cells pixel-perfect regardless of panel
+  // size; the panel scrolls horizontally if weeks exceed the viewport.
+  const parts = [`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="heatmap-svg" aria-label="Sessions per day, last ${days} days; peak ${max}">`];
+  for (let w = 0; w < weeks; w++) {
+    for (let d = 0; d < 7; d++) {
+      const dayDate = new Date(start.getTime() + (w * 7 + d) * 86400000);
+      if (dayDate > today) continue; // future cells stay blank
+      const iso = isoDate(dayDate);
+      const n = counts.get(iso) || 0;
+      const x = GAP + w * (CELL + GAP);
+      const y = GAP + d * (CELL + GAP);
+      const b = bucket(n);
+      const selected = scopeDay === iso ? " data-selected=\"1\"" : "";
+      parts.push(
+        `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" rx="2" ry="2" class="heatmap-cell" data-day="${iso}" data-bucket="${b}" data-count="${n}"${selected}><title>${iso}: ${n} session${n === 1 ? "" : "s"}</title></rect>`,
+      );
+    }
+  }
+  parts.push("</svg>");
+  canvas.innerHTML = parts.join("");
+  // Summary text in the header: total sessions in the visible window + the
+  // selected-day scope when applicable.
+  const totalInWindow = pts.reduce((s, p) => s + p.n, 0);
+  const summary = document.getElementById("activity-summary");
+  if (summary) {
+    summary.textContent = scopeDay
+      ? `${totalInWindow} sessions in ${days}d  ·  filtered to ${scopeDay}`
+      : `${totalInWindow} sessions in ${days}d  ·  peak ${max}/day`;
   }
 }
+
+function isoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function setScopeDay(iso) {
+  if (scopeDay === iso) iso = ""; // second click on same cell clears filter
+  scopeDay = iso;
+  persist.set("scopeDay", scopeDay);
+  // Re-render heatmap so the selected cell shows the highlight, and refetch
+  // the session list with the new filter.
+  loadHeatmap();
+  const q = searchInput.value.trim();
+  if (q) runSearch(q);
+  else loadRecent();
+}
+
+function setScopeRange(label) {
+  if (!(label in SCOPE_DAYS_BY_LABEL)) return;
+  scopeRangeLabel = label;
+  persist.set("scopeRange", label);
+  for (const b of document.querySelectorAll(".topbar-scope .chip[data-scope]")) {
+    b.setAttribute("aria-pressed", String(b.dataset.scope === label));
+  }
+  loadHeatmap();
+}
+
+// Topbar scope chips
+document.querySelectorAll(".topbar-scope .chip[data-scope]").forEach((btn) => {
+  btn.addEventListener("click", () => setScopeRange(btn.dataset.scope));
+});
+
+// Click delegation for heatmap cells
+document.getElementById("activity-canvas").addEventListener("click", (e) => {
+  const cell = e.target.closest(".heatmap-cell");
+  if (!cell) return;
+  setScopeDay(cell.dataset.day);
+});
 
 document.querySelectorAll(".detail-tabs .tab").forEach((btn) => {
   btn.addEventListener("click", () => renderDetailTab(btn.dataset.tab));
@@ -465,15 +556,20 @@ if (recentToggle) recentToggle.setAttribute("aria-pressed", String(recentMode));
 const restoredQuery = persist.get("searchQuery", "");
 if (restoredQuery) searchInput.value = restoredQuery;
 
+// Reflect persisted scope range in the topbar chips before the first
+// heatmap render so the right chip lights up.
+for (const b of document.querySelectorAll(".topbar-scope .chip[data-scope]")) {
+  b.setAttribute("aria-pressed", String(b.dataset.scope === scopeRangeLabel));
+}
+
 connectFeed();
 pollStatus();
 setInterval(pollStatus, 5000);
 loadCategoryChips();
-loadSparkline();
-// Refresh sparkline + chip counts every 60s so the topbar reflects new
-// indexing activity. Cheap (two small SELECTs) and avoids flicker.
+loadHeatmap();
+// Refresh heatmap + chip counts every 60s. Cheap (two small SELECTs).
 setInterval(() => {
-  loadSparkline();
+  loadHeatmap();
   loadCategoryChips();
 }, 60_000);
 

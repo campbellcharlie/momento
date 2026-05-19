@@ -183,6 +183,11 @@ export function handleRecent(_req: IncomingMessage, res: ServerResponse, ctx: Ro
   const projectPath = getQuery(url, "project_path");
   const client = getQuery(url, "client");
   const category = getQuery(url, "category");
+  // day filter: YYYY-MM-DD. Driven by the dashboard heatmap click. Compared
+  // against date(modified) so a session that spans midnight still surfaces
+  // on the day it was last active. Validated as a date-shape string before
+  // hitting SQL (defense-in-depth; the param goes through a bound `?` too).
+  const day = getQuery(url, "day");
   let rows = getRecent(ctx.db, n, projectPath || undefined);
   if (client) rows = rows.filter((r) => r.client === client);
   if (category) {
@@ -196,6 +201,9 @@ export function handleRecent(_req: IncomingMessage, res: ServerResponse, ctx: Ro
       ).map((r) => r.session_id),
     );
     rows = rows.filter((r) => ids.has(r.id));
+  }
+  if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    rows = rows.filter((r) => (r.modified || "").startsWith(day));
   }
   sendJson(res, 200, { sessions: rows });
 }
@@ -222,7 +230,10 @@ export function handleCategories(_req: IncomingMessage, res: ServerResponse, ctx
 // to match the hook's recency half-life; capped at 90 to keep the response
 // tiny and bounded.
 export function handleActivity(_req: IncomingMessage, res: ServerResponse, ctx: RouteCtx, url: URL): void {
-  const days = clamp(parseInt(getQuery(url, "days", "14"), 10), 1, 90);
+  // Range capped at 730 days (2 years) so the dashboard's "all" scope still
+  // has a sane upper bound — pre-2024 sessions are vanishingly few and a
+  // larger range bloats the heatmap payload without adding signal.
+  const days = clamp(parseInt(getQuery(url, "days", "14"), 10), 1, 730);
   const rows = ctx.db
     .prepare(
       `SELECT date(created) AS day, COUNT(*) AS n
