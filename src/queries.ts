@@ -80,8 +80,32 @@ function attachTopEditedPaths(db: DatabaseSync, sessions: SessionRow[]): void {
 }
 
 const FTS_SAFE = /[^A-Za-z0-9_\s]/g;
+// Common English tokens that show up in nearly every session and would force
+// AND queries to over-constrain. Matches cli.ts's STOPWORDS list so the
+// hook and the MCP tools agree on what counts as a "rare" token.
+const FTS_STOPWORDS = new Set([
+  "a", "an", "and", "are", "at", "be", "but", "by", "for", "from", "get", "give",
+  "how", "i", "if", "in", "is", "it", "its", "me", "my", "of", "on", "or", "our",
+  "please", "review", "show", "that", "the", "their", "them", "then", "this", "to",
+  "use", "was", "what", "with", "you", "your",
+]);
+
+function ftsTokens(q: string): string[] {
+  return q.replace(FTS_SAFE, " ").trim().split(/\s+/).filter(Boolean);
+}
+
 function ftsEscape(q: string): string {
-  return q.replace(FTS_SAFE, " ").trim().split(/\s+/).filter(Boolean).map((t) => `"${t}"`).join(" OR ");
+  return ftsTokens(q).map((t) => `"${t}"`).join(" OR ");
+}
+
+// AND query over rare (non-stopword, >1 char) tokens. Returns empty string
+// if no tokens qualify — caller should fall back to OR. The AND query
+// guarantees every meaningful token appears at least once in each match,
+// which kills the long-tail noise BM25-OR pulls in when one common token
+// (like "category" or "api") matches thousands of sessions.
+function ftsAndQuery(tokens: string[]): string {
+  const rare = tokens.filter((t) => t.length > 1 && !FTS_STOPWORDS.has(t.toLowerCase()));
+  return rare.map((t) => `"${t}"`).join(" AND ");
 }
 
 export function search(
@@ -133,16 +157,25 @@ export function getProject(db: DatabaseSync, projectPath: string): {
   return { sessions, toolCallCount: tc.n, fileTouchCount: ft.n };
 }
 
-// Keyword/BM25 ranking over session summaries and message contents. Despite the
-// historical name `findSimilar`, this is keyword overlap, not embedding-based
-// similarity — synonyms won't match. See `findByTopic`, the preferred name.
+// Keyword/BM25 ranking over session summaries and message contents. Despite
+// the historical name `findSimilar`, this is keyword overlap, not embedding-
+// based similarity — synonyms won't match. See `findByTopic`, the preferred
+// name.
+//
+// Two-pass: AND over rare tokens first, OR fallback only if AND returns
+// nothing. AND-first is the load-bearing fix for the BM25-OR noise problem
+// — without it, every long-tail session sharing one common query word
+// pollutes the candidate pool. Pattern matches cli.ts's prompt-hook
+// behavior so the MCP tool and the hook see the same candidate set on the
+// same query.
 export function findByTopic(
   db: DatabaseSync,
   description: string,
   limit = 10,
 ): SessionRow[] {
-  const fts = ftsEscape(description);
-  if (!fts) return [];
+  const tokens = ftsTokens(description);
+  if (tokens.length === 0) return [];
+
   const sql = `
     WITH per_msg AS (
       SELECT session_id AS sid, bm25(messages_fts) AS s
@@ -155,13 +188,25 @@ export function findByTopic(
     combined AS (SELECT sid, s FROM per_msg UNION ALL SELECT sid, s FROM per_sess),
     ranked AS (SELECT sid, MIN(s) AS score FROM combined GROUP BY sid)
     SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
-           s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount, s.jsonl_path AS jsonlPath,
-           s.client AS client
+           s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount,
+           s.jsonl_path AS jsonlPath, s.client AS client
     FROM ranked r JOIN sessions s ON s.id = r.sid
     ORDER BY r.score ASC
     LIMIT ?
   `;
-  return db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
+  const run = (fts: string): SessionRow[] =>
+    db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
+
+  const andQ = ftsAndQuery(tokens);
+  if (andQ) {
+    const hits = run(andQ);
+    if (hits.length > 0) return hits;
+  }
+  // OR fallback — when no rare tokens qualify (very short query, all
+  // stopwords) or AND returned zero hits. This is when the result quality
+  // dips and the caller may want to follow up with rarer keywords.
+  const orQ = tokens.map((t) => `"${t}"`).join(" OR ");
+  return orQ ? run(orQ) : [];
 }
 
 /** @deprecated Use {@link findByTopic}. Kept for callers that haven't updated yet. */
@@ -189,8 +234,8 @@ export function findByTopicWithRecency(
   description: string,
   limit = 10,
 ): SessionRow[] {
-  const fts = ftsEscape(description);
-  if (!fts) return [];
+  const tokens = ftsTokens(description);
+  if (tokens.length === 0) return [];
   const cap = Math.max(30, limit * 3);
   const sql = `
     WITH msg_ranked AS (
@@ -232,7 +277,19 @@ export function findByTopicWithRecency(
     ORDER BY scored.rrf DESC
     LIMIT ?
   `;
-  const sessions = db.prepare(sql).all(fts, fts, cap, cap, cap, cap, limit) as unknown as SessionRow[];
+  const run = (fts: string): SessionRow[] =>
+    db.prepare(sql).all(fts, fts, cap, cap, cap, cap, limit) as unknown as SessionRow[];
+
+  // AND-first matches findByTopic so the BM25 candidate pool is already
+  // clean — RRF is then purely a relevance/recency tiebreaker, not a noise
+  // ranker. The cap stays as defense-in-depth for OR-fallback cases.
+  let sessions: SessionRow[] = [];
+  const andQ = ftsAndQuery(tokens);
+  if (andQ) sessions = run(andQ);
+  if (sessions.length === 0) {
+    const orQ = tokens.map((t) => `"${t}"`).join(" OR ");
+    if (orQ) sessions = run(orQ);
+  }
   attachTopEditedPaths(db, sessions);
   return sessions;
 }
