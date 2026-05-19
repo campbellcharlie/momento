@@ -167,6 +167,70 @@ export function findByTopic(
 /** @deprecated Use {@link findByTopic}. Kept for callers that haven't updated yet. */
 export const findSimilar = findByTopic;
 
+// Same as findByTopic but adds a recency lane via Reciprocal Rank Fusion.
+// RRF fuses multiple ranked lanes: each session's per-lane rank becomes
+// 1/(k + rank), summed across lanes. Higher is better (opposite of BM25
+// scores). Pattern from graymatter (pkg/memory/recall.go:75-94, MIT) — works
+// well when BM25 alone produces ties or near-ties on small corpora.
+//
+// Weights mirror findByTopic's emphasis: sessions_fts at 2x (summary/prompt
+// matches are stronger signal), messages_fts at 1x, recency at 0.5x (a tie-
+// breaker, not a primary signal). k=60 is the RRF paper's default.
+//
+// Implementation note: the recency lane only ranks sessions that already
+// appear in at least one BM25 lane. Otherwise every old session in the DB
+// would creep into results regardless of query relevance — recency is for
+// breaking ties among relevant results, not for surfacing irrelevant fresh
+// sessions.
+export function findByTopicWithRecency(
+  db: DatabaseSync,
+  description: string,
+  limit = 10,
+): SessionRow[] {
+  const fts = ftsEscape(description);
+  if (!fts) return [];
+  const sql = `
+    WITH msg_ranked AS (
+      SELECT session_id AS sid,
+             ROW_NUMBER() OVER (ORDER BY bm25(messages_fts)) AS rnk
+      FROM messages_fts WHERE messages_fts MATCH ?
+    ),
+    sess_ranked AS (
+      SELECT session_id AS sid,
+             ROW_NUMBER() OVER (ORDER BY bm25(sessions_fts)) AS rnk
+      FROM sessions_fts WHERE sessions_fts MATCH ?
+    ),
+    candidates AS (
+      SELECT sid FROM msg_ranked
+      UNION
+      SELECT sid FROM sess_ranked
+    ),
+    recency_ranked AS (
+      SELECT s.id AS sid,
+             ROW_NUMBER() OVER (ORDER BY s.modified DESC) AS rnk
+      FROM sessions s JOIN candidates c ON c.sid = s.id
+    ),
+    fused AS (
+      SELECT sid, 1.0 / (60.0 + rnk) AS contrib FROM msg_ranked
+      UNION ALL
+      SELECT sid, 2.0 / (60.0 + rnk) AS contrib FROM sess_ranked
+      UNION ALL
+      SELECT sid, 0.5 / (60.0 + rnk) AS contrib FROM recency_ranked
+    ),
+    scored AS (SELECT sid, SUM(contrib) AS rrf FROM fused GROUP BY sid)
+    SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
+           s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount,
+           s.jsonl_path AS jsonlPath, s.client AS client,
+           scored.rrf AS score
+    FROM scored JOIN sessions s ON s.id = scored.sid
+    ORDER BY scored.rrf DESC
+    LIMIT ?
+  `;
+  const sessions = db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
+  attachTopEditedPaths(db, sessions);
+  return sessions;
+}
+
 export function getRecent(db: DatabaseSync, n = 20, projectPath?: string): SessionRow[] {
   const sql = `
     SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,

@@ -13,7 +13,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Indexer } from "../dist/indexer.js";
 import { loadConfig } from "../dist/config.js";
-import { search, findByTopic, findSimilar, getRecent, filesTouched } from "../dist/queries.js";
+import { search, findByTopic, findByTopicWithRecency, findSimilar, getRecent, filesTouched } from "../dist/queries.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, "fixtures");
@@ -116,6 +116,27 @@ test("findSimilar deprecated alias still works", async () => {
   try {
     const hits = findSimilar(fx.indexer.db, "rate-limit api");
     assert.ok(hits.length >= 1);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("findByTopicWithRecency returns matching sessions with positive RRF score", async () => {
+  const fx = await buildOnce();
+  try {
+    const hits = findByTopicWithRecency(fx.indexer.db, "rate-limit api client backoff");
+    assert.ok(hits.length >= 1, "expected at least one hit");
+    assert.ok(
+      hits.every((h) => typeof h.score === "number" && h.score > 0),
+      "RRF scores should all be positive (higher is better)",
+    );
+    // Same matching set as findByTopic — recency only re-ranks within candidates.
+    const baseline = findByTopic(fx.indexer.db, "rate-limit api client backoff");
+    assert.deepEqual(
+      new Set(hits.map((h) => h.id)),
+      new Set(baseline.map((h) => h.id)),
+      "recency lane should not change the candidate set, only the order",
+    );
   } finally {
     fx.cleanup();
   }

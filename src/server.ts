@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { Indexer, defaultSources } from "./indexer.js";
-import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown } from "./queries.js";
+import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown, findByTopicWithRecency } from "./queries.js";
 import { ALL_CATEGORIES } from "./classifier.js";
 import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
 
@@ -115,6 +115,19 @@ const TOOLS = [
     // Prefer `find_by_topic` — same behavior, more accurate name.
     name: "find_similar",
     description: "Deprecated alias for `find_by_topic`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        description: { type: "string" },
+        limit: { type: "number", default: 10 },
+      },
+      required: ["description"],
+    },
+  },
+  {
+    name: "find_by_topic_recent",
+    description:
+      "Same keyword search as find_by_topic but fuses a recency lane via Reciprocal Rank Fusion. Recent sessions among relevant matches rank higher; irrelevant fresh sessions are not surfaced (recency only re-ranks within BM25 candidates). Use when there are likely several near-equally-relevant past sessions and the most recent is more useful (e.g. 'how did I configure X' where the answer evolved).",
     inputSchema: {
       type: "object",
       properties: {
@@ -238,6 +251,12 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
     case "find_by_topic":
     case "find_similar": // deprecated alias — same dispatch
       return findByTopic(
+        indexer.db,
+        String(args.description ?? ""),
+        typeof args.limit === "number" ? args.limit : 10,
+      );
+    case "find_by_topic_recent":
+      return findByTopicWithRecency(
         indexer.db,
         String(args.description ?? ""),
         typeof args.limit === "number" ? args.limit : 10,
