@@ -105,12 +105,20 @@ export async function* iterateSessions(rootDir: string): AsyncGenerator<SessionR
 export async function parseSession(
   jsonlPath: string,
   config?: MomentoConfig,
-): Promise<ParsedSession> {
+): Promise<ParsedSession & { meta?: IndexedSessionMeta }> {
   const cfg = config ?? loadConfig();
   const messages: ParsedMessage[] = [];
   const toolCalls: ToolCall[] = [];
   const filesTouched: FileTouch[] = [];
   let sessionId = "";
+  // Capture the first cwd we see. Claude Code stores sessions under
+  // ~/.claude/projects/<encoded-launch-dir>/<uuid>.jsonl — the encoded dir
+  // round-trips poorly (it's lossy hyphen-collapsed and ignores symlinks).
+  // Every JSONL entry carries the real cwd; the first one is authoritative.
+  // Used to override projectPath downstream so repoRootForPath and
+  // get_recent_by_edited_path see real filesystem paths instead of encoded
+  // launch dirs.
+  let cwd: string | undefined;
 
   const stream = createReadStream(jsonlPath, { encoding: "utf8" });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
@@ -127,8 +135,9 @@ export async function parseSession(
     }
     const parsed = JsonlEntryZ.safeParse(json);
     if (!parsed.success) continue;
-    const entry = parsed.data as { type: string; sessionId?: string };
+    const entry = parsed.data as { type: string; sessionId?: string; cwd?: string };
     if (entry.sessionId && !sessionId) sessionId = entry.sessionId;
+    if (!cwd && typeof entry.cwd === "string" && entry.cwd) cwd = entry.cwd;
 
     if (entry.type === "user") {
       const u = UserMessageZ.safeParse(json);
@@ -173,7 +182,22 @@ export async function parseSession(
     }
   }
 
-  return { sessionId, messages, toolCalls, filesTouched };
+  // Canonicalize the captured cwd so symlinked roots collapse to the same
+  // project_path across sessions (e.g. ~/src -> /Volumes/Raid1_Storage/src).
+  // Falls back silently if the path is gone — the encoded projectDir will
+  // be used as the project_path instead in indexer.
+  let resolvedCwd: string | undefined;
+  if (cwd) {
+    try {
+      resolvedCwd = realpathSync(cwd);
+    } catch {
+      resolvedCwd = cwd;
+    }
+  }
+  const meta: IndexedSessionMeta | undefined = resolvedCwd
+    ? { projectPath: resolvedCwd }
+    : undefined;
+  return { sessionId, messages, toolCalls, filesTouched, meta };
 }
 
 export async function readSessionsIndex(
