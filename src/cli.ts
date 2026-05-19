@@ -3,7 +3,12 @@ import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import { appendFileSync, existsSync, realpathSync } from "node:fs";
-import { findByTopicRanked, type MatchType, type SessionRow } from "./queries.js";
+import {
+  findByTopicRanked,
+  sessionCategoryBreakdown,
+  type MatchType,
+  type SessionRow,
+} from "./queries.js";
 
 const DB_PATH = join(homedir(), ".momento", "index.db");
 const TIMEOUT_MS = 200;
@@ -17,6 +22,35 @@ const parsedMinScore = Number(process.env.MOMENTO_INJECT_MIN_SCORE ?? "-1");
 const MIN_SCORE = Number.isFinite(parsedMinScore) ? parsedMinScore : -1;
 const parsedMinTokens = Number(process.env.MOMENTO_INJECT_MIN_TOKENS ?? "4");
 const MIN_TOKENS = Number.isFinite(parsedMinTokens) ? Math.max(1, parsedMinTokens) : 4;
+// Recency decay: sessions older than this many days get a soft score penalty
+// at hit-selection time. Tiny vs BM25 magnitudes (~5-10) so it only matters
+// when two hits are otherwise close — exactly when recency should break ties.
+const parsedRecencyHalfLife = Number(process.env.MOMENTO_INJECT_RECENCY_HALF_LIFE_DAYS ?? "14");
+const RECENCY_HALF_LIFE_DAYS = Number.isFinite(parsedRecencyHalfLife) && parsedRecencyHalfLife > 0
+  ? parsedRecencyHalfLife
+  : 14;
+// When the prompt looks like code-work (debugging/refactor/feature/test/etc.),
+// demote hits whose turn categories are mostly chat. The pattern matches a few
+// rare-enough terms; intentionally narrow to avoid over-firing on prose.
+const CODE_WORK_HINTS = /\b(bug|fix|debug|error|broken|failing|crash|refactor|implement|test|deploy|build|compile|patch|stack\s*trace|exception)\b/i;
+const CHAT_CATEGORIES = new Set(["conversation", "brainstorming"]);
+// Strip the most common synthetic prefixes when deriving a snippet from FTS —
+// Codex sessions bury the real first prompt under <environment_context>,
+// Claude Code wraps slash-commands and shell prefixes in <command-...> tags,
+// and local-command transcripts get a long <local-command-caveat> header.
+// Mirrors parser.ts's PREFIX_PATTERNS so the FTS-derived snippet sees the same
+// cleanup that summary/firstPrompt already received at index time.
+const SNIPPET_PREFIX_STRIP = [
+  // Claude Code's slash-command and local-shell wrappers — caveat, stdout,
+  // stderr, name, message, args. Match any tag prefixed with `command-` or
+  // `local-command-`. Repeated globally because a single message can carry
+  // several stacked tags (e.g. caveat + name + stdout).
+  /<(?:local-)?command-[a-z]+>[\s\S]*?<\/(?:local-)?command-[a-z]+>\s*/gi,
+  // Codex synthetic context dump.
+  /<environment_context>[\s\S]*?<\/environment_context>\s*/gi,
+  // System reminders injected by various clients.
+  /<system-reminder>[\s\S]*?<\/system-reminder>\s*/gi,
+];
 const STOPWORDS = new Set([
   "a", "an", "and", "are", "at", "be", "but", "by", "for", "from", "get", "give",
   "how", "i", "if", "in", "is", "it", "its", "me", "my", "of", "on", "or", "our",
@@ -219,6 +253,70 @@ function isSameRepoHit(hit: SessionRow, currentRepo: string): boolean {
   return (hit.topEditedPaths ?? []).some((p) => repoRootForPath(p) === currentRepo);
 }
 
+// Score adjustment: BM25 is lower-is-better, so we ADD penalties. Returns the
+// adjusted score (still lower-better) so caller can sort ascending as before.
+function adjustScore(
+  baseScore: number,
+  modified: string | null,
+  breakdown: { category: string; turns: number }[],
+  promptLooksCodeWork: boolean,
+): number {
+  let s = baseScore;
+  // Recency: linear penalty proportional to age. Half-life is the soft scale
+  // at which the penalty equals 0.5 — small vs BM25 noise so it only breaks
+  // ties between near-equal candidates.
+  if (modified) {
+    const ageMs = Date.now() - Date.parse(modified);
+    const ageDays = ageMs > 0 ? ageMs / 86_400_000 : 0;
+    if (Number.isFinite(ageDays)) s += (ageDays / RECENCY_HALF_LIFE_DAYS) * 0.5;
+  }
+  // Category: when the user's prompt is code-work, demote hits whose
+  // classified turns are >=85% conversation/brainstorming. Threshold matches
+  // the classifier's "no tool use, casual chat" cluster — see classifier.ts.
+  if (promptLooksCodeWork && breakdown.length > 0) {
+    const total = breakdown.reduce((acc, b) => acc + b.turns, 0);
+    const chat = breakdown
+      .filter((b) => CHAT_CATEGORIES.has(b.category))
+      .reduce((acc, b) => acc + b.turns, 0);
+    if (total > 0 && chat / total >= 0.85) s += 2.0;
+  }
+  return s;
+}
+
+// When summary and firstPrompt are both empty (common for Codex sessions and
+// some encoded Claude entries), pull the first user message from FTS as a
+// fallback snippet. The strip patterns above remove the synthetic wrappers
+// that would otherwise bury the real content.
+function deriveSnippet(db: DatabaseSync, sessionId: string): string | null {
+  // Walk a few user messages — the very first is often pure boilerplate
+  // (slash-command transcripts, environment_context dumps). Stop at the first
+  // one with meaningful content remaining after the synthetic prefixes are
+  // stripped. 8 is enough in practice without slowing the hook.
+  const rows = db
+    .prepare(
+      `SELECT content FROM messages_fts WHERE session_id = ? AND role = 'user' LIMIT 8`,
+    )
+    .all(sessionId) as { content?: string }[];
+  for (const row of rows) {
+    if (!row?.content) continue;
+    let text = row.content;
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const re of SNIPPET_PREFIX_STRIP) {
+        const next = text.replace(re, "");
+        if (next !== text) {
+          text = next;
+          changed = true;
+        }
+      }
+    }
+    text = text.replace(/\s+/g, " ").trim();
+    if (text.length >= 8) return text.slice(0, 120);
+  }
+  return null;
+}
+
 function displayNameForHit(hit: SessionRow): string {
   const repoRoot = repoRootForPath(hit.projectPath);
   if (repoRoot) return basename(repoRoot);
@@ -345,7 +443,22 @@ async function main(): Promise<void> {
       : rawHits;
     const selfHitFiltered = currentSessionId !== null && hits.length !== rawHits.length;
     const selected = selectHits(prompt, hits);
-    const selectedHits = selected.hits.slice(0, MAX_SELECTED_HITS);
+    // Rerank by recency + category before slicing. AND-first BM25 gives a clean
+    // candidate set; this stage breaks ties on (a) freshness and (b) whether
+    // the hit actually contains code-work turns when the user's prompt is
+    // about code-work. See adjustScore for the exact penalties.
+    const promptLooksCodeWork = CODE_WORK_HINTS.test(prompt);
+    const reranked = selected.hits.map((h) => {
+      const baseScore = typeof h.score === "number" ? h.score : 0;
+      const breakdown = sessionCategoryBreakdown(db, h.id);
+      return {
+        hit: h,
+        adjusted: adjustScore(baseScore, h.modified, breakdown, promptLooksCodeWork),
+        breakdown,
+      };
+    });
+    reranked.sort((a, b) => a.adjusted - b.adjusted);
+    const selectedHits = reranked.slice(0, MAX_SELECTED_HITS).map((r) => r.hit);
     const decision = decideInjection(selected.hits, tokens, matchType);
     debugLog({
       event: "decision",
@@ -362,6 +475,7 @@ async function main(): Promise<void> {
       currentRepo: selected.currentRepo,
       currentSessionId,
       selfHitFiltered,
+      promptLooksCodeWork,
       selectedHitIds: selectedHits.map((h) => h.id),
       hits: hits.map((h) => ({
         id: h.id,
@@ -369,13 +483,24 @@ async function main(): Promise<void> {
         score: h.score ?? null,
         topEditedPaths: h.topEditedPaths ?? [],
       })),
+      reranked: reranked.map((r) => ({
+        id: r.hit.id,
+        baseScore: r.hit.score ?? null,
+        adjusted: r.adjusted,
+        breakdown: r.breakdown,
+      })),
     });
     if (!decision.inject) return;
     const lines: string[] = ["<!-- momento: relevant past sessions -->"];
     for (const h of selectedHits) {
       const name = displayNameForHit(h);
       const date = (h.modified ?? "").slice(0, 10);
-      const summary = (h.summary ?? h.firstPrompt ?? "(no summary)").replace(/\s+/g, " ").slice(0, 120);
+      const rawSummary =
+        (h.summary && h.summary.trim()) ||
+        (h.firstPrompt && h.firstPrompt.trim()) ||
+        deriveSnippet(db, h.id) ||
+        "(no summary)";
+      const summary = rawSummary.replace(/\s+/g, " ").slice(0, 120);
       lines.push(`- [${name}] ${summary} (${date}) - ${h.id}`);
     }
     process.stdout.write(lines.join("\n") + "\n");
