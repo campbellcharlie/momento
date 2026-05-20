@@ -131,6 +131,115 @@ pauseBtn.addEventListener("click", () => {
   pauseBtn.textContent = paused ? "Resume" : "Pause";
 });
 
+// Live strip: streams tool_call + file_touch events from SSE. Kept separate
+// from the legacy #feed list (which still drives the "+N new" badge) so the
+// dashboard can render them with distinct styling and capacity.
+const MAX_LIVE_ROWS = 200;
+const liveFeed = document.getElementById("live-strip-feed");
+const liveStatus = document.getElementById("live-strip-status");
+const liveClear = document.getElementById("live-strip-clear");
+let liveCount = 0;
+function fmtClockTime(iso) {
+  if (!iso) return "--:--:--";
+  const m = iso.match(/T(\d{2}:\d{2}:\d{2})/);
+  return m ? m[1] : iso.slice(11, 19) || "--:--:--";
+}
+function shortPath(p) {
+  if (!p) return "";
+  const home = "/Users/";
+  const idx = p.indexOf(home);
+  if (idx >= 0) {
+    const tail = p.slice(idx + home.length);
+    const slash = tail.indexOf("/");
+    return slash >= 0 ? "~/" + tail.slice(slash + 1) : "~/" + tail;
+  }
+  return p;
+}
+// Pull a meaningful one-line hint out of a tool_call's stored input_json.
+// Shape varies by client; we only handle the common Anthropic/Codex/Gemini
+// shapes and fall back to nothing on parse failure.
+function toolHint(toolName, inputJson) {
+  if (!inputJson) return "";
+  let args;
+  try { args = JSON.parse(inputJson); } catch { return ""; }
+  if (!args || typeof args !== "object") return "";
+  const cmd = args.command || args.cmd;
+  if (cmd && typeof cmd === "string") return cmd.replace(/\s+/g, " ").slice(0, 80);
+  const fp = args.file_path || args.path || args.filePath;
+  if (fp && typeof fp === "string") return fp.split("/").pop();
+  if (typeof args.query === "string") return args.query.slice(0, 80);
+  if (typeof args.pattern === "string") return args.pattern.slice(0, 80);
+  // Script-eval style tools: serval evaluate_js, etc.
+  const code = args.script || args.expression || args.code;
+  if (typeof code === "string") return code.replace(/\s+/g, " ").slice(0, 80);
+  if (typeof args.description === "string") return args.description.slice(0, 80);
+  if (typeof args.url === "string") return args.url.slice(0, 80);
+  return "";
+}
+function projectLabel(projectPath) {
+  if (!projectPath) return "";
+  return projectPath.split("/").filter(Boolean).pop() || "";
+}
+function appendLiveRow(kind, ev) {
+  if (!liveFeed) return;
+  const row = document.createElement("li");
+  row.dataset.kind = kind;
+  const ts = document.createElement("span");
+  ts.className = "ts";
+  ts.textContent = fmtClockTime(ev.timestamp);
+  const k = document.createElement("span");
+  k.className = "kind";
+  k.textContent = kind === "tool_call" ? ev.tool_name || "tool" : ev.operation || "edit";
+  const body = document.createElement("span");
+  body.className = "body";
+  const proj = projectLabel(ev.project_path);
+  if (kind === "tool_call") {
+    const hint = toolHint(ev.tool_name, ev.input_json);
+    body.textContent = proj && hint ? `${proj} · ${hint}` : (hint || proj || `[${(ev.session_id || "").slice(0, 8)}]`);
+    body.title = ev.input_json || ev.session_id || "";
+  } else {
+    body.textContent = proj
+      ? `${proj} · ${shortPath(ev.file_path)}`
+      : shortPath(ev.file_path);
+    body.title = ev.file_path || "";
+  }
+  row.append(ts, k, body);
+  liveFeed.prepend(row);
+  while (liveFeed.children.length > MAX_LIVE_ROWS) liveFeed.lastElementChild.remove();
+  liveCount += 1;
+  if (liveStatus) liveStatus.textContent = `${liveCount} events`;
+}
+if (liveClear) {
+  liveClear.addEventListener("click", () => {
+    if (liveFeed) liveFeed.innerHTML = "";
+    liveCount = 0;
+    if (liveStatus) liveStatus.textContent = "cleared";
+  });
+}
+
+// The feed pill doubles as the visibility toggle for the live strip:
+// pressed=visible (highlighted), unpressed=hidden. State persists; the
+// inline script in index.html applies it before first paint.
+(() => {
+  const pill = document.getElementById("feed-pill");
+  if (!pill) return;
+  const sync = () => {
+    const hidden = !!document.documentElement.dataset.liveHidden;
+    pill.setAttribute("aria-pressed", String(!hidden));
+  };
+  sync();
+  pill.addEventListener("click", () => {
+    if (document.documentElement.dataset.liveHidden) {
+      delete document.documentElement.dataset.liveHidden;
+      try { localStorage.removeItem("momento.ui.liveHidden"); } catch { /* ignore */ }
+    } else {
+      document.documentElement.dataset.liveHidden = "1";
+      persist.set("liveHidden", "1");
+    }
+    sync();
+  });
+})();
+
 function connectFeed() {
   const es = new EventSource("/api/feed");
   es.addEventListener("hello", () => {
@@ -143,6 +252,12 @@ function connectFeed() {
     } catch (err) {
       console.error("bad feed payload", err);
     }
+  });
+  es.addEventListener("tool_call", (e) => {
+    try { appendLiveRow("tool_call", JSON.parse(e.data)); } catch {}
+  });
+  es.addEventListener("file_touch", (e) => {
+    try { appendLiveRow("file_touch", JSON.parse(e.data)); } catch {}
   });
   es.onerror = () => {
     feedPill.dataset.state = "error";
@@ -468,13 +583,11 @@ async function loadHeatmap() {
     if (r >= 0.25) return 2;
     return 1;
   };
-  const CELL = 12, GAP = 3;
+  // Fixed cell size across all scopes so the grid's density stays consistent
+  // when switching between 14d / 30d / 90d / all.
+  const CELL = 8, GAP = 3;
   const W = weeks * (CELL + GAP) + GAP;
   const H = 7 * (CELL + GAP) + GAP;
-  // Render at native pixel size — the heatmap is meant to be 12px-per-day
-  // dense, not stretched to fill the panel. CSS `width:auto` + the explicit
-  // width/height attributes keep cells pixel-perfect regardless of panel
-  // size; the panel scrolls horizontally if weeks exceed the viewport.
   const parts = [`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="heatmap-svg" aria-label="Sessions per day, last ${days} days; peak ${max}">`];
   for (let w = 0; w < weeks; w++) {
     for (let d = 0; d < 7; d++) {
@@ -764,6 +877,112 @@ for (const b of document.querySelectorAll(".topbar-scope .chip[data-scope]")) {
   b.setAttribute("aria-pressed", String(b.dataset.scope === scopeRangeLabel));
 }
 
+// Theme picker. Persisted theme is already applied to <html data-theme=...>
+// by an inline script in index.html before first paint; this block only
+// keeps the dropdown's selection in sync and writes future changes back.
+(() => {
+  const sel = document.getElementById("theme-select");
+  if (!sel) return;
+  const current = document.documentElement.dataset.theme || "";
+  sel.value = current;
+  sel.addEventListener("change", () => {
+    const value = sel.value;
+    if (value) {
+      document.documentElement.dataset.theme = value;
+      persist.set("theme", value);
+    } else {
+      delete document.documentElement.dataset.theme;
+      try { localStorage.removeItem("momento.ui.theme"); } catch { /* ignore */ }
+    }
+  });
+})();
+
+// Live strip resize handle. Drag the bottom edge to grow/shrink the feed
+// pane; height persists to localStorage and is re-applied pre-paint by the
+// inline script in index.html so reloads don't snap back to default.
+(() => {
+  const strip = document.querySelector(".live-strip");
+  const handle = document.getElementById("live-resize");
+  if (!strip || !handle) return;
+  const MIN = 60;
+  const clampMax = () => Math.max(MIN + 40, Math.floor(window.innerHeight * 0.7));
+  const apply = (px) => {
+    const v = Math.min(clampMax(), Math.max(MIN, px));
+    document.documentElement.style.setProperty("--live-height", v + "px");
+    persist.set("liveHeight", String(v));
+  };
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing");
+    const top = strip.getBoundingClientRect().top;
+    const onMove = (ev) => apply(ev.clientY - top);
+    const onUp = () => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.classList.remove("dragging");
+      document.body.classList.remove("resizing");
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  });
+  handle.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const cur = strip.getBoundingClientRect().height;
+    const step = e.shiftKey ? 60 : 16;
+    apply(cur + (e.key === "ArrowDown" ? step : -step));
+  });
+})();
+
+// Detail panel resize handle. Drag updates the --detail-height CSS var on
+// the dashboard grid; value is clamped against viewport height and persisted
+// so reloads keep the user's preferred split.
+(() => {
+  const grid = document.querySelector(".dashboard .grid");
+  const handle = document.getElementById("detail-resize");
+  if (!grid || !handle) return;
+  const MIN = 120;
+  const restored = parseInt(persist.get("detailHeight", ""), 10);
+  if (Number.isFinite(restored) && restored >= MIN) {
+    grid.style.setProperty("--detail-height", restored + "px");
+  }
+  const clampMax = () => Math.max(MIN + 40, window.innerHeight - 200);
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing");
+    const onMove = (ev) => {
+      const next = Math.min(clampMax(), Math.max(MIN, window.innerHeight - ev.clientY - 24));
+      grid.style.setProperty("--detail-height", next + "px");
+    };
+    const onUp = () => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.classList.remove("dragging");
+      document.body.classList.remove("resizing");
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      const cur = grid.style.getPropertyValue("--detail-height").trim();
+      if (cur) persist.set("detailHeight", parseInt(cur, 10).toString());
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  });
+  handle.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const cur = parseInt(grid.style.getPropertyValue("--detail-height"), 10)
+      || Math.round(window.innerHeight * 0.4);
+    const step = e.shiftKey ? 60 : 16;
+    const next = Math.min(clampMax(), Math.max(MIN, cur + (e.key === "ArrowUp" ? step : -step)));
+    grid.style.setProperty("--detail-height", next + "px");
+    persist.set("detailHeight", next.toString());
+  });
+})();
+
 connectFeed();
 pollStatus();
 setInterval(pollStatus, 5000);
@@ -777,6 +996,7 @@ setInterval(() => {
   loadCategoryLanes();
   loadRepoLanes();
 }, 60_000);
+
 
 if (restoredQuery) runSearch(restoredQuery);
 else loadRecent();

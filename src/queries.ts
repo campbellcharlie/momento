@@ -38,10 +38,17 @@ export interface SessionRow {
 // e.g. ~/src/myrepo/foo/bar.ts -> ~/src/myrepo
 // Canonicalize once at module load so symlinked roots collapse to a single bucket prefix.
 // Configurable via MOMENTO_SRC_ROOTS (colon-separated). Defaults to ~/src.
+//
+// Deeper roots are checked first so nested workspaces (e.g. a "projects"
+// directory containing many engagements) can register their inner directory
+// as a root and have each child bucket as its own repo, rather than every
+// path collapsing to the outer parent.
 const SRC_ROOTS = (process.env.MOMENTO_SRC_ROOTS
   ? process.env.MOMENTO_SRC_ROOTS.split(":").filter(Boolean)
   : [`${process.env.HOME ?? ""}/src`]
-).map(canonicalize);
+)
+  .map(canonicalize)
+  .sort((a, b) => b.length - a.length);
 function bucketPath(filePath: string): string | null {
   const fullPath = canonicalize(filePath);
   for (const root of SRC_ROOTS) {
@@ -49,7 +56,11 @@ function bucketPath(filePath: string): string | null {
     if (fullPath.startsWith(root + "/")) {
       const rest = fullPath.slice(root.length + 1);
       const repo = rest.split("/")[0];
-      if (repo) return `${root}/${repo}`;
+      // Lowercase the repo segment so case-only variants ("Serval" vs
+      // "serval") collapse into one bucket. macOS HFS+ is case-insensitive,
+      // so the on-disk identity is the same; only the stored path string
+      // differs by which casing the user happened to cd into.
+      if (repo) return `${root}/${repo.toLowerCase()}`;
     }
   }
   return null;

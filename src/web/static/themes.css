@@ -1,0 +1,191 @@
+/* Themes adapted from ~/src/lorg's palette.
+   Lorg uses --bg/--bg-surface/--bg-elevated/--text/--text-tertiary; momento
+   uses --bg/--surface-1/--surface-2/--text-primary/--text-muted. The blocks
+   below set momento's variable names so the existing stylesheet picks them
+   up without further changes.
+
+   Each theme also remaps the three client badge tints (claude/codex/gemini)
+   onto purple/blue/yellow channels so feed pills/result rows still read as
+   distinct categories per palette. */
+
+[data-theme="dracula"] {
+  --bg: #282a36;
+  --surface-1: #21222c;
+  --surface-2: #2d2f3d;
+  --text-primary: #f8f8f2;
+  --text-muted: #8a99c2;
+  --accent: #bd93f9;
+  --warning: #f1fa8c;
+  --error: #ff5555;
+  --border: #44475a;
+  --badge-claude: #ff79c6;
+  --badge-codex: #8be9fd;
+  --badge-gemini: #f1fa8c;
+}
+
+[data-theme="gruvbox"] {
+  --bg: #1d2021;
+  --surface-1: #282828;
+  --surface-2: #32302f;
+  --text-primary: #ebdbb2;
+  --text-muted: #a08c7a;
+  --accent: #d79921;
+  --warning: #fabd2f;
+  --error: #fb4934;
+  --border: #3c3836;
+  --badge-claude: #d3869b;
+  --badge-codex: #83a598;
+  --badge-gemini: #fabd2f;
+}
+
+[data-theme="nord"] {
+  --bg: #2e3440;
+  --surface-1: #3b4252;
+  --surface-2: #434c5e;
+  --text-primary: #eceff4;
+  --text-muted: #93a1bb;
+  --accent: #88c0d0;
+  --warning: #ebcb8b;
+  --error: #bf616a;
+  --border: #4c566a;
+  --badge-claude: #b48ead;
+  --badge-codex: #81a1c1;
+  --badge-gemini: #ebcb8b;
+}
+
+[data-theme="monokai"] {
+  --bg: #2d2a2e;
+  --surface-1: #221f22;
+  --surface-2: #363337;
+  --text-primary: #fcfcfa;
+  --text-muted: #8d8b8d;
+  --accent: #a9dc76;
+  --warning: #ffd866;
+  --error: #ff6188;
+  --border: #403e41;
+  --badge-claude: #ab9df2;
+  --badge-codex: #78dce8;
+  --badge-gemini: #ffd866;
+}
+
+[data-theme="solarized"] {
+  --bg: #002b36;
+  --surface-1: #073642;
+  --surface-2: #0a3f4e;
+  --text-primary: #fdf6e3;
+  --text-muted: #839496;
+  --accent: #268bd2;
+  --warning: #b58900;
+  --error: #dc322f;
+  --border: #0d4a5a;
+  --badge-claude: #6c71c4;
+  --badge-codex: #268bd2;
+  --badge-gemini: #b58900;
+}
+
+[data-theme="catppuccin"] {
+  --bg: #1e1e2e;
+  --surface-1: #181825;
+  --surface-2: #27273a;
+  --text-primary: #cdd6f4;
+  --text-muted: #8388a0;
+  --accent: #89b4fa;
+  --warning: #f9e2af;
+  --error: #f38ba8;
+  --border: #313244;
+  --badge-claude: #cba6f7;
+  --badge-codex: #89b4fa;
+  --badge-gemini: #f9e2af;
+}
+
+[data-theme="rosepine"] {
+  --bg: #191724;
+  --surface-1: #1f1d2e;
+  --surface-2: #26233a;
+  --text-primary: #e0def4;
+  --text-muted: #8b87a3;
+  --accent: #c4a7e7;
+  --warning: #f6c177;
+  --error: #eb6f92;
+  --border: #2a2740;
+  --badge-claude: #c4a7e7;
+  --badge-codex: #9ccfd8;
+  --badge-gemini: #f6c177;
+}
+
+[data-theme="midnight"] {
+  --bg: #0a0e1a;
+  --surface-1: #101627;
+  --surface-2: #161d32;
+  --text-primary: #e8ecf4;
+  --text-muted: #7e8ca8;
+  --accent: #64b5f6;
+  --warning: #ffee58;
+  --error: #ef5350;
+  --border: #1c243d;
+  --badge-claude: #ab47bc;
+  --badge-codex: #64b5f6;
+  --badge-gemini: #ffee58;
+}
+
+[data-theme="ember"] {
+  --bg: #1a1010;
+  --surface-1: #211414;
+  --surface-2: #2a1a1a;
+  --text-primary: #f5e6e0;
+  --text-muted: #a88578;
+  --accent: #ff8a65;
+  --warning: #ffd54f;
+  --error: #ff5252;
+  --border: #332020;
+  --badge-claude: #ce93d8;
+  --badge-codex: #4fc3f7;
+  --badge-gemini: #ffd54f;
+}
+
+[data-theme="ayu-mirage"] {
+  --bg: #242936;
+  --surface-1: #1f242f;
+  --surface-2: #282e3b;
+  --text-primary: #cccac2;
+  --text-muted: #707a8c;
+  --accent: #d5ff80;
+  --warning: #ffcc66;
+  --error: #ff6666;
+  --border: #2d3343;
+  --badge-claude: #dfbfff;
+  --badge-codex: #5ccfe6;
+  --badge-gemini: #ffcc66;
+}
+
+[data-theme="cyber"] {
+  --bg: #0a0e16;
+  --surface-1: #131822;
+  --surface-2: #1c2230;
+  --text-primary: #e8efff;
+  --text-muted: #8895b3;
+  --accent: #00e5ff;
+  --warning: #ffd24d;
+  --error: #ff3d6e;
+  --border: #232a3a;
+  --badge-claude: #c66bff;
+  --badge-codex: #5e9bff;
+  --badge-gemini: #ffd24d;
+}
+
+/* Ayu Light — light canvas. Most of the UI assumes a dark bg, so this
+   theme also nudges a few semantic colors to keep contrast usable. */
+[data-theme="ayu-light"] {
+  --bg: #fcfcfc;
+  --surface-1: #f5f5f5;
+  --surface-2: #ededed;
+  --text-primary: #5c6166;
+  --text-muted: #8a9199;
+  --accent: #ffaa33;
+  --warning: #f2ae49;
+  --error: #f07171;
+  --border: #dcdcdc;
+  --badge-claude: #a37acc;
+  --badge-codex: #55b4d4;
+  --badge-gemini: #f2ae49;
+}

@@ -86,7 +86,9 @@ interface SelectedHits {
 const SRC_ROOTS = (process.env.MOMENTO_SRC_ROOTS
   ? process.env.MOMENTO_SRC_ROOTS.split(":").filter(Boolean)
   : [join(homedir(), "src")]
-).map(canonicalize);
+)
+  .map(canonicalize)
+  .sort((a, b) => b.length - a.length);
 
 function debugLog(entry: Record<string, unknown>): void {
   if (!DEBUG_ENABLED) return;

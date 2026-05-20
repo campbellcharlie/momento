@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>momento — local session history</title>
     <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="/static/themes.css" />
+    <script>
+      // Apply persisted theme before first paint so reloads don't flash the
+      // default palette. Kept inline for minimum latency.
+      try {
+        var t = localStorage.getItem("momento.ui.theme");
+        if (t) document.documentElement.dataset.theme = t;
+        if (localStorage.getItem("momento.ui.liveHidden") === "1") {
+          document.documentElement.dataset.liveHidden = "1";
+        }
+        var lh = parseInt(localStorage.getItem("momento.ui.liveHeight") || "", 10);
+        if (Number.isFinite(lh) && lh >= 60) {
+          document.documentElement.style.setProperty("--live-height", lh + "px");
+        }
+      } catch (e) { /* ignore */ }
+    </script>
   </head>
   <body class="dashboard">
     <header class="topbar" role="banner">
@@ -24,11 +40,46 @@
           hidden
           aria-label="New sessions arrived since page load — click to refresh list"
         >+0 new</button>
-        <span id="feed-pill" class="pill pill-muted" data-state="unknown">feed: connecting…</span>
+        <label class="theme-picker" aria-label="Theme">
+          <span class="hint">theme:</span>
+          <select id="theme-select">
+            <option value="">momento</option>
+            <option value="dracula">dracula</option>
+            <option value="gruvbox">gruvbox</option>
+            <option value="nord">nord</option>
+            <option value="monokai">monokai</option>
+            <option value="solarized">solarized</option>
+            <option value="catppuccin">catppuccin</option>
+            <option value="rosepine">rosé pine</option>
+            <option value="midnight">midnight</option>
+            <option value="ember">ember</option>
+            <option value="ayu-mirage">ayu mirage</option>
+            <option value="ayu-light">ayu light</option>
+            <option value="cyber">cyber</option>
+          </select>
+        </label>
+        <button id="feed-pill" type="button" class="pill pill-muted" data-state="unknown" aria-pressed="true" title="Toggle live feed">feed: connecting…</button>
         <span id="uptime-pill" class="pill pill-muted">uptime: 0s</span>
         <span id="count-pill" class="pill pill-muted">sessions: 0</span>
       </div>
     </header>
+
+    <section id="live-strip" class="live-strip" aria-label="Live activity feed">
+      <header class="live-strip-header">
+        <span class="hint">LIVE</span>
+        <span id="live-strip-status" class="hint">idle</span>
+        <button id="live-strip-clear" type="button" class="chip" title="Clear">clear</button>
+      </header>
+      <ol id="live-strip-feed" class="live-strip-feed" aria-live="polite"></ol>
+      <div
+        id="live-resize"
+        class="resize-handle resize-handle-bottom"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize live feed"
+        tabindex="0"
+      ></div>
+    </section>
 
     <main class="grid" role="main">
       <!-- Primary nav: time. Clicking a cell scopes everything below. -->
@@ -99,6 +150,14 @@
       </section>
 
       <section id="detail-panel" class="panel panel-detail detail" aria-live="polite" hidden>
+        <div
+          id="detail-resize"
+          class="resize-handle"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize detail panel"
+          tabindex="0"
+        ></div>
         <header class="detail-header panel-header">
           <h2 id="detail-title"></h2>
           <button id="detail-close" type="button" aria-label="Close detail">×</button>
