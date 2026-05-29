@@ -141,8 +141,8 @@ const liveClear = document.getElementById("live-strip-clear");
 let liveCount = 0;
 function fmtClockTime(iso) {
   if (!iso) return "--:--:--";
-  const m = iso.match(/T(\d{2}:\d{2}:\d{2})/);
-  return m ? m[1] : iso.slice(11, 19) || "--:--:--";
+  const d = new Date(iso);
+  return isNaN(d) ? "--:--:--" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 function shortPath(p) {
   if (!p) return "";
@@ -270,7 +270,7 @@ async function pollStatus() {
     const r = await fetch("/api/status");
     if (!r.ok) return;
     const j = await r.json();
-    uptimePill.textContent = `uptime: ${j.uptime_seconds}s`;
+    uptimePill.textContent = `uptime: ${fmtUptime(j.uptime_seconds)}`;
     countPill.textContent = `sessions: ${j.session_count}`;
     dbPathEl.textContent = `db: ${j.db_path} (${formatBytes(j.db_size_bytes)})`;
   } catch {
@@ -278,6 +278,15 @@ async function pollStatus() {
   }
 }
 
+function fmtUptime(s) {
+  s = Math.floor(s);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
 function formatBytes(n) {
   if (!n) return "0 B";
   if (n < 1024) return `${n} B`;

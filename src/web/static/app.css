@@ -698,30 +698,12 @@ html[data-live-hidden] .live-strip { display: none; }
   .divider { display: none; }
 }
 
-/* Visible scrollbars on the scrollable panes. */
-.event-list,
-.result-list,
-.detail,
-#detail-list {
-  scrollbar-width: thin;
-  scrollbar-color: var(--text-muted) var(--surface-1);
-}
-.event-list::-webkit-scrollbar,
-.result-list::-webkit-scrollbar,
-.detail::-webkit-scrollbar,
-#detail-list::-webkit-scrollbar { width: 10px; height: 10px; }
-.event-list::-webkit-scrollbar-track,
-.result-list::-webkit-scrollbar-track,
-.detail::-webkit-scrollbar-track,
-#detail-list::-webkit-scrollbar-track { background: var(--surface-1); }
-.event-list::-webkit-scrollbar-thumb,
-.result-list::-webkit-scrollbar-thumb,
-.detail::-webkit-scrollbar-thumb,
-#detail-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
-.event-list::-webkit-scrollbar-thumb:hover,
-.result-list::-webkit-scrollbar-thumb:hover,
-.detail::-webkit-scrollbar-thumb:hover,
-#detail-list::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+/* Scrollbars — global, thin, unobtrusive. */
+body { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 /* Rendered markdown inside the messages tab. */
 .markdown {
