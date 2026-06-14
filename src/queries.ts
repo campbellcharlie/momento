@@ -32,6 +32,7 @@ export interface SessionRow {
   messageCount: number | null;
   jsonlPath: string;
   client: string;
+  outcome?: string | null;
   score?: number;
   topEditedPaths?: string[];
 }
@@ -223,7 +224,7 @@ export function getProject(db: DatabaseSync, projectPath: string): {
   const sessions = db
     .prepare(
       `SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
-              created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client
+              created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client, outcome
        FROM sessions WHERE project_path = ? ORDER BY modified DESC`,
     )
     .all(projectPath) as unknown as SessionRow[];
@@ -278,7 +279,7 @@ export function findByTopicRanked(
     ranked AS (SELECT sid, MIN(s) AS score FROM combined GROUP BY sid)
     SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
            s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount, s.jsonl_path AS jsonlPath,
-           s.client AS client,
+           s.client AS client, s.outcome AS outcome,
            r.score AS score
     FROM ranked r JOIN sessions s ON s.id = r.sid
     ORDER BY r.score ASC
@@ -369,7 +370,7 @@ export function findByTopicWithRecency(
     scored AS (SELECT sid, SUM(contrib) AS rrf FROM fused GROUP BY sid)
     SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
            s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount,
-           s.jsonl_path AS jsonlPath, s.client AS client,
+           s.jsonl_path AS jsonlPath, s.client AS client, s.outcome AS outcome,
            scored.rrf AS score
     FROM scored JOIN sessions s ON s.id = scored.sid
     ORDER BY scored.rrf DESC
@@ -394,7 +395,7 @@ export function findByTopicWithRecency(
 export function getRecent(db: DatabaseSync, n = 20, projectPath?: string): SessionRow[] {
   const sql = `
     SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
-           created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client
+           created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client, outcome
     FROM sessions
     ${projectPath ? "WHERE project_path = ?" : ""}
     ORDER BY modified DESC

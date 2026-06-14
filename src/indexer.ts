@@ -6,6 +6,7 @@ import { cleanFirstPrompt, IndexedSessionMeta } from "./parser.js";
 import { MomentoConfig, loadConfig, projectExcluded } from "./config.js";
 import { ClientName, Source, defaultSources } from "./sources.js";
 import { buildTurns, classifyTurn } from "./classifier.js";
+import { detectOutcome } from "./outcome.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -18,7 +19,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   git_branch TEXT,
   message_count INTEGER,
   jsonl_path TEXT NOT NULL,
-  client TEXT NOT NULL DEFAULT 'claude_code'
+  client TEXT NOT NULL DEFAULT 'claude_code',
+  outcome TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   session_id UNINDEXED,
@@ -66,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_turn_categories_category ON turn_categories(categ
 // columns/tables. Migrations are idempotent — they read PRAGMA user_version and
 // ALTER only if needed. Existing rows get sane defaults so the DB is queryable
 // before the first reindex.
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 function migrate(db: DatabaseSync): void {
   const cur = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -105,6 +107,15 @@ function migrate(db: DatabaseSync): void {
     db.exec(
       "CREATE INDEX IF NOT EXISTS idx_turn_categories_category ON turn_categories(category)",
     );
+  }
+  if (cur < 5) {
+    // v5: add sessions.outcome (success|failure|mixed|null). Probe before ALTER
+    // so the migration stays idempotent. Existing rows stay null until
+    // reindexed; recall treats null as "unknown", never as failure.
+    const cols = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "outcome")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN outcome TEXT");
+    }
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
@@ -148,8 +159,8 @@ export class Indexer {
 
   private prepare(): void {
     this.stmtUpsertSession = this.db.prepare(`
-      INSERT INTO sessions (id, project_path, summary, first_prompt, created, modified, git_branch, message_count, jsonl_path, client)
-      VALUES (@id, @project_path, @summary, @first_prompt, @created, @modified, @git_branch, @message_count, @jsonl_path, @client)
+      INSERT INTO sessions (id, project_path, summary, first_prompt, created, modified, git_branch, message_count, jsonl_path, client, outcome)
+      VALUES (@id, @project_path, @summary, @first_prompt, @created, @modified, @git_branch, @message_count, @jsonl_path, @client, @outcome)
       ON CONFLICT(id) DO UPDATE SET
         project_path=excluded.project_path,
         summary=excluded.summary,
@@ -159,7 +170,8 @@ export class Indexer {
         git_branch=excluded.git_branch,
         message_count=excluded.message_count,
         jsonl_path=excluded.jsonl_path,
-        client=excluded.client
+        client=excluded.client,
+        outcome=excluded.outcome
     `);
     this.stmtSessionMtime = this.db.prepare(`SELECT modified FROM sessions WHERE id = ?`);
     this.stmtDelSession = this.db.prepare(`DELETE FROM sessions WHERE id = ?`);
@@ -317,6 +329,7 @@ export class Indexer {
     // bash input strings, which we already paid in parser.ts.
     const turns = buildTurns(parsed.messages, parsed.toolCalls);
     const turnCats = turns.map((t) => classifyTurn(t));
+    const outcome = detectOutcome(parsed.messages, parsed.toolCalls);
 
     this.db.exec("BEGIN");
     try {
@@ -336,6 +349,7 @@ export class Indexer {
         message_count: m.messageCount ?? parsed.messages.length,
         jsonl_path: jsonlPath,
         client: source.client,
+        outcome,
       });
       this.stmtInsSessFts.run(id, summary ?? "", firstPrompt ?? "");
       for (const msg of parsed.messages) this.stmtInsFts.run(id, msg.role, msg.text);
