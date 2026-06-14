@@ -503,7 +503,14 @@ async function main(): Promise<void> {
         deriveSnippet(db, h.id) ||
         "(no summary)";
       const summary = rawSummary.replace(/\s+/g, " ").slice(0, 120);
-      lines.push(`- [${name}] ${summary} (${date}) - ${h.id}`);
+      // Outcome marker tells the agent whether this precedent actually worked,
+      // so a "✗" session reads as a what-not-to-repeat rather than a model to
+      // follow. Empty when unknown (null) — no marker, line is unchanged.
+      const mark =
+        h.outcome === "success" ? "✓ " :
+        h.outcome === "failure" ? "✗ " :
+        h.outcome === "mixed" ? "~ " : "";
+      lines.push(`- [${name}] ${mark}${summary} (${date}) - ${h.id}`);
     }
     process.stdout.write(lines.join("\n") + "\n");
   } finally {
