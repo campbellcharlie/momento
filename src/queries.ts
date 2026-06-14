@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { realpathSync } from "node:fs";
+import { aliasTerms } from "./synonyms.js";
 
 function canonicalize(p: string): string {
   try {
@@ -156,10 +157,6 @@ function ftsTokens(q: string): string[] {
   return q.replace(FTS_SAFE, " ").trim().split(/\s+/).filter(Boolean);
 }
 
-function ftsEscape(q: string): string {
-  return ftsTokens(q).map((t) => `"${t}"`).join(" OR ");
-}
-
 // AND query over rare (non-stopword, >1 char) tokens. Returns empty string
 // if no tokens qualify — caller should fall back to OR. The AND query
 // guarantees every meaningful token appears at least once in each match,
@@ -170,13 +167,29 @@ function ftsAndQuery(tokens: string[]): string {
   return rare.map((t) => `"${t}"`).join(" AND ");
 }
 
+// Build the AND and OR FTS queries for a description, folding in deterministic
+// synonym aliases (synonyms.ts). Aliases are OR'd in everywhere: into the AND
+// query as an alternative clause `(<and>) OR alias...` so a synonym-only match
+// still surfaces without loosening the literal AND, and appended to the OR
+// fallback. When no synonym group fires, aliasTerms() returns [] and the
+// queries are byte-identical to the pre-synonym behavior.
+function buildFtsQueries(tokens: string[], rawQuery: string): { andQ: string; orQ: string } {
+  const aliases = aliasTerms(rawQuery);
+  let andQ = ftsAndQuery(tokens);
+  if (aliases.length > 0) {
+    andQ = andQ ? `(${andQ}) OR ${aliases.join(" OR ")}` : aliases.join(" OR ");
+  }
+  const orQ = [...tokens.map((t) => `"${t}"`), ...aliases].join(" OR ");
+  return { andQ, orQ };
+}
+
 export function search(
   db: DatabaseSync,
   q: string,
   opts: { limit?: number; projectPath?: string } = {},
 ): SearchHit[] {
   const limit = opts.limit ?? 20;
-  const fts = ftsEscape(q);
+  const { orQ: fts } = buildFtsQueries(ftsTokens(q), q);
   if (!fts) return [];
   const sql = `
     SELECT m.session_id AS sessionId, s.project_path AS projectPath, s.summary AS summary,
@@ -265,11 +278,10 @@ export function findByTopicRanked(
   `;
   const run = (fts: string): SessionRow[] =>
     db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
-  const andQ = ftsAndQuery(tokens);
+  const { andQ, orQ } = buildFtsQueries(tokens, description);
   let hits = andQ ? run(andQ) : [];
   let matchType: MatchType = hits.length > 0 ? "and" : "none";
   if (hits.length === 0) {
-    const orQ = tokens.map((t) => `"${t}"`).join(" OR ");
     if (orQ) {
       hits = run(orQ);
       if (hits.length > 0) matchType = "or";
@@ -362,10 +374,9 @@ export function findByTopicWithRecency(
   // clean — RRF is then purely a relevance/recency tiebreaker, not a noise
   // ranker. The cap stays as defense-in-depth for OR-fallback cases.
   let sessions: SessionRow[] = [];
-  const andQ = ftsAndQuery(tokens);
+  const { andQ, orQ } = buildFtsQueries(tokens, description);
   if (andQ) sessions = run(andQ);
   if (sessions.length === 0) {
-    const orQ = tokens.map((t) => `"${t}"`).join(" OR ");
     if (orQ) sessions = run(orQ);
   }
   attachTopEditedPaths(db, sessions);

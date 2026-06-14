@@ -1,0 +1,15 @@
+{
+  "_comment": "Labeled recall cases for the momento eval harness. Each case: a query a user might type, and an `expect` substring that must appear (case-insensitive) in a hit's project_path, summary, or first_prompt for that hit to count as relevant. Cases are authored against Charlie's real ~/.momento index. `kind` tags the gap each case probes so the harness can report per-gap recall.",
+  "cases": [
+    { "query": "wwdc27", "expect": "wwdc", "kind": "fuzzy", "note": "bare near-miss token: user types 27, corpus says WWDC26 — isolates the fuzzy gap with no other carrying tokens" },
+    { "query": "wwdc27 transcripts knowledge base", "expect": "wwdc", "kind": "keyword", "note": "multi-token; other words carry it even without fuzzy" },
+    { "query": "serval import safari cookies", "expect": "serval", "kind": "keyword" },
+    { "query": "pentest exhaustion gates evidence levels", "expect": "pentest", "kind": "keyword" },
+    { "query": "lorg proxy traffic", "expect": "lorg", "kind": "keyword" },
+    { "query": "momento recall ranking", "expect": "momento", "kind": "keyword" },
+    { "query": "dev-framework phases scoring", "expect": "dev-framework", "kind": "keyword" },
+    { "query": "vulnerability reward program submission", "expect": "bounty", "kind": "synonym", "note": "VRP == bug bounty; needs synonym expansion" },
+    { "query": "following followers github", "expect": "github", "kind": "stem", "note": "porter stemming already covers follow/following" },
+    { "query": "gmail spam cleanup mailbox", "expect": "gmail", "kind": "keyword" }
+  ]
+}
