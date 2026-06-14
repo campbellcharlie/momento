@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { realpathSync } from "node:fs";
 import { aliasTerms } from "./synonyms.js";
+import { fuzzyPrefixTerms } from "./fuzzy.js";
 
 function canonicalize(p: string): string {
   try {
@@ -174,12 +175,19 @@ function ftsAndQuery(tokens: string[]): string {
 // fallback. When no synonym group fires, aliasTerms() returns [] and the
 // queries are byte-identical to the pre-synonym behavior.
 function buildFtsQueries(tokens: string[], rawQuery: string): { andQ: string; orQ: string } {
+  const rare = tokens.filter((t) => t.length > 1 && !FTS_STOPWORDS.has(t.toLowerCase()));
   const aliases = aliasTerms(rawQuery);
+  // Fuzzy prefix expansion fires only when a single rare token carries the
+  // query (e.g. "wwdc27") — the near-miss case with no precision to protect.
+  // Multi-token queries are already carried by their other tokens (verified in
+  // the recall eval), so broadening them would only add noise.
+  const fuzzy = rare.length === 1 ? fuzzyPrefixTerms(rare) : [];
+  const extra = [...aliases, ...fuzzy];
   let andQ = ftsAndQuery(tokens);
-  if (aliases.length > 0) {
-    andQ = andQ ? `(${andQ}) OR ${aliases.join(" OR ")}` : aliases.join(" OR ");
+  if (extra.length > 0) {
+    andQ = andQ ? `(${andQ}) OR ${extra.join(" OR ")}` : extra.join(" OR ");
   }
-  const orQ = [...tokens.map((t) => `"${t}"`), ...aliases].join(" OR ");
+  const orQ = [...tokens.map((t) => `"${t}"`), ...extra].join(" OR ");
   return { andQ, orQ };
 }
 
