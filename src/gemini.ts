@@ -12,17 +12,38 @@
 // Schema reference: https://geminicli.com/docs/cli/session-management/
 
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { ParsedMessage, ToolCall, FileTouch } from "./types.js";
 import type { SessionRef, ParsedSession, IndexedSessionMeta } from "./parser.js";
-import type { MomentoConfig } from "./config.js";
+import { MomentoConfig, loadConfig, pathExcluded } from "./config.js";
+import { inferShellFileTouches, extractShellCommand } from "./infer_touches.js";
+
+// Gemini's structured file tools. Their `args.file_path` is absolute and the
+// operation is as trustworthy as Claude's native tools, so these produce
+// `source:"native"` touches. Exported so the conformance drift sentinel can pin
+// the recognized set. `run_shell_command` is handled separately (inferred).
+export const GEMINI_FILE_TOOL_OP: Record<string, "read" | "write" | "edit"> = {
+  read_file: "read",
+  write_file: "write",
+  replace: "edit",
+};
+
+interface GeminiToolCall {
+  id?: string;
+  name?: string;
+  args?: Record<string, unknown>;
+  status?: string; // "success" | "error" | "cancelled"
+  timestamp?: string;
+}
 
 interface GeminiMessage {
   id?: string;
   type?: string; // "user" | "gemini" | "info" | (future)
   content?: unknown;
   timestamp?: string;
+  toolCalls?: GeminiToolCall[]; // present on `gemini`-type messages
 }
 
 interface GeminiSessionFile {
@@ -91,13 +112,13 @@ export async function* iterateGeminiSessions(rootDir: string): AsyncGenerator<Se
   }
 }
 
-// `config` is accepted for parity with the other client parsers; Gemini has no
-// per-message config knobs today (no thinking blocks, no exclusion-eligible
-// file paths in messages), so it's currently unused.
+// `config` drives path exclusion for the file-touches extracted from each
+// `gemini` message's `toolCalls` array (see the message loop below).
 export async function parseGeminiSession(
   jsonPath: string,
-  _config?: MomentoConfig,
+  config?: MomentoConfig,
 ): Promise<ParsedSession & { meta: IndexedSessionMeta }> {
+  const cfg = config ?? loadConfig();
   const messages: ParsedMessage[] = [];
   const toolCalls: ToolCall[] = [];
   const filesTouched: FileTouch[] = [];
@@ -142,20 +163,87 @@ export async function parseGeminiSession(
     const t = m.type;
     if (t !== "user" && t !== "gemini") continue; // skip "info" and unknown types
     const role: "user" | "assistant" = t === "user" ? "user" : "assistant";
+    const msgTs = m.timestamp ?? meta.modified ?? meta.created ?? "";
     const text = stringifyContent(m.content);
-    if (!text) continue;
-    messages.push({
-      uuid: m.id ?? `${jsonPath}:${messages.length}`,
-      role,
-      text,
-      timestamp: m.timestamp ?? meta.modified ?? meta.created ?? "",
-    });
-    if (role === "user" && firstUserPrompt === null) firstUserPrompt = text;
+    if (text) {
+      messages.push({
+        uuid: m.id ?? `${jsonPath}:${messages.length}`,
+        role,
+        text,
+        timestamp: msgTs,
+      });
+      if (role === "user" && firstUserPrompt === null) firstUserPrompt = text;
+    }
+
+    // `gemini`-type messages carry a populated `toolCalls` array with absolute
+    // `file_path` args. Extract every call as a tool_call, then record file
+    // activity: structured file tools → native; run_shell_command → inferred.
+    if (t === "gemini" && Array.isArray(m.toolCalls)) {
+      for (const tc of m.toolCalls) {
+        if (!tc || typeof tc !== "object" || typeof tc.name !== "string") continue;
+        const tcTs = tc.timestamp ?? msgTs;
+        toolCalls.push({
+          toolName: tc.name,
+          inputJson: JSON.stringify(tc.args ?? null),
+          timestamp: tcTs,
+        });
+        recordGeminiFileTouch(tc, tcTs, cfg, filesTouched);
+        if (tc.name === "run_shell_command" && (!tc.status || tc.status === "success")) {
+          const command = extractShellCommand(tc.args);
+          if (command) recordInferredShellTouches(command, tcTs, cfg, filesTouched);
+        }
+      }
+    }
   }
 
   if (firstUserPrompt) meta.firstPrompt = firstUserPrompt;
   meta.messageCount = messages.length;
   return { sessionId, messages, toolCalls, filesTouched, meta };
+}
+
+// Record a native file-touch from a structured Gemini file tool. Skips tool
+// calls that didn't succeed so we only log edits that actually happened.
+function recordGeminiFileTouch(
+  tc: GeminiToolCall,
+  timestamp: string,
+  cfg: MomentoConfig,
+  out: FileTouch[],
+): void {
+  if (tc.status && tc.status !== "success") return; // skip error/cancelled
+  const op = GEMINI_FILE_TOOL_OP[tc.name ?? ""];
+  if (!op) return;
+  const p = tc.args?.file_path;
+  if (typeof p !== "string" || !p) return;
+  let canonical = p;
+  try {
+    canonical = realpathSync(p);
+  } catch {
+    /* file gone or unreadable; keep original */
+  }
+  if (pathExcluded(cfg, canonical)) return;
+  out.push({ filePath: canonical, operation: op, timestamp, source: "native" });
+}
+
+// Shared wiring for inferred shell-command touches (mirrors codex.ts): only
+// absolute targets are canonicalized; all stay `source:"inferred"`.
+function recordInferredShellTouches(
+  command: string,
+  timestamp: string,
+  cfg: MomentoConfig,
+  out: FileTouch[],
+): void {
+  for (const ft of inferShellFileTouches(command, timestamp)) {
+    let fp = ft.filePath;
+    if (isAbsolute(fp)) {
+      try {
+        fp = realpathSync(fp);
+      } catch {
+        /* file gone; keep literal */
+      }
+    }
+    if (pathExcluded(cfg, fp)) continue;
+    out.push({ ...ft, filePath: fp });
+  }
 }
 
 // Gemini messages have observed `content` as plain strings. Be defensive: if a

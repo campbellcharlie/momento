@@ -11,6 +11,18 @@ function canonicalize(p: string): string {
   }
 }
 
+// Per-hit provenance: WHY this result surfaced. Additive, in-memory only — no
+// DB schema change. `whyText` is the one-line human citation the model reads
+// without parsing the struct.
+export interface WhyMatched {
+  matchType: "and" | "or"; // AND = every rare term present; OR = fallback
+  matchedTerms: string[]; // literal query tokens found in this hit
+  matchField: "summary" | "first_prompt" | "message"; // where the match landed
+  projectMatch: boolean; // a query term appears in the project path
+  score: number; // raw bm25 / RRF score already computed for ranking
+  via?: "alias" | "fuzzy"; // set when the hit came only from an expansion term
+}
+
 export interface SearchHit {
   sessionId: string;
   projectPath: string;
@@ -19,6 +31,8 @@ export interface SearchHit {
   role: string;
   score: number;
   client: string;
+  why?: WhyMatched;
+  whyText?: string;
 }
 
 export interface SessionRow {
@@ -35,6 +49,8 @@ export interface SessionRow {
   outcome?: string | null;
   score?: number;
   topEditedPaths?: string[];
+  why?: WhyMatched;
+  whyText?: string;
 }
 
 // Bucket a touched file path to the deepest meaningful repo dir under a known src root.
@@ -175,7 +191,13 @@ function ftsAndQuery(tokens: string[]): string {
 // still surfaces without loosening the literal AND, and appended to the OR
 // fallback. When no synonym group fires, aliasTerms() returns [] and the
 // queries are byte-identical to the pre-synonym behavior.
-function buildFtsQueries(tokens: string[], rawQuery: string): { andQ: string; orQ: string } {
+// Rare (indexable) tokens plus the alias/fuzzy expansion terms that the FTS
+// queries fold in. Shared by buildFtsQueries and the provenance builder so a
+// hit's `why` reflects the exact terms that could have matched it.
+function queryTerms(
+  tokens: string[],
+  rawQuery: string,
+): { rare: string[]; aliases: string[]; fuzzy: string[] } {
   const rare = tokens.filter((t) => t.length > 1 && !FTS_STOPWORDS.has(t.toLowerCase()));
   const aliases = aliasTerms(rawQuery);
   // Fuzzy prefix expansion fires only when a single rare token carries the
@@ -183,6 +205,11 @@ function buildFtsQueries(tokens: string[], rawQuery: string): { andQ: string; or
   // Multi-token queries are already carried by their other tokens (verified in
   // the recall eval), so broadening them would only add noise.
   const fuzzy = rare.length === 1 ? fuzzyPrefixTerms(rare) : [];
+  return { rare, aliases, fuzzy };
+}
+
+function buildFtsQueries(tokens: string[], rawQuery: string): { andQ: string; orQ: string } {
+  const { aliases, fuzzy } = queryTerms(tokens, rawQuery);
   const extra = [...aliases, ...fuzzy];
   let andQ = ftsAndQuery(tokens);
   if (extra.length > 0) {
@@ -190,6 +217,91 @@ function buildFtsQueries(tokens: string[], rawQuery: string): { andQ: string; or
   }
   const orQ = [...tokens.map((t) => `"${t}"`), ...extra].join(" OR ");
   return { andQ, orQ };
+}
+
+// Case-insensitive whole-word presence test. Query tokens are already stripped
+// to [A-Za-z0-9_] by ftsTokens, so \b is safe.
+function textHasTerm(text: string | null | undefined, term: string): boolean {
+  if (!text) return false;
+  return new RegExp(`\\b${term}\\b`, "i").test(text);
+}
+
+function termsIn(texts: (string | null | undefined)[], terms: string[]): string[] {
+  const joined = texts.filter(Boolean).join("\n");
+  return terms.filter((t) => textHasTerm(joined, t));
+}
+
+// Build the per-hit `why` block + one-line `whyText` citation from data already
+// in hand — no extra DB round-trip. `srcHint` is the winning FTS table for the
+// ranked producers ('message' | 'session'); search passes 'message'; the recency
+// producer omits it and the field is derived from the returned text.
+function explainHit(opts: {
+  terms: { rare: string[]; aliases: string[]; fuzzy: string[] };
+  matchType: "and" | "or";
+  score: number;
+  snippet?: string;
+  summary?: string | null;
+  firstPrompt?: string | null;
+  projectPath?: string | null;
+  projectFilter?: boolean;
+  srcHint?: "message" | "session";
+}): { why: WhyMatched; whyText: string } {
+  const { rare, aliases, fuzzy } = opts.terms;
+  const texts = [opts.snippet, opts.summary, opts.firstPrompt];
+  let matchedTerms = termsIn(texts, rare);
+  let via: "alias" | "fuzzy" | undefined;
+  // If no literal token is visible in the returned text, the hit likely came
+  // via an alias/fuzzy expansion — surface that instead of an empty list.
+  if (matchedTerms.length === 0) {
+    const aliasHits = termsIn(texts, aliases);
+    const fuzzyHits = termsIn(texts, fuzzy);
+    if (aliasHits.length > 0) {
+      matchedTerms = aliasHits;
+      via = "alias";
+    } else if (fuzzyHits.length > 0) {
+      matchedTerms = fuzzyHits;
+      via = "fuzzy";
+    }
+  }
+  // An AND match guarantees every rare term is present in the matched document
+  // by construction. When the body text isn't in hand (no snippet on some
+  // producers) we can still report them honestly.
+  if (matchedTerms.length === 0 && opts.matchType === "and" && rare.length > 0) {
+    matchedTerms = rare;
+  }
+
+  // Which field the match landed in.
+  let matchField: WhyMatched["matchField"];
+  if (opts.srcHint === "message") {
+    matchField = "message";
+  } else if (opts.srcHint === "session") {
+    matchField = termsIn([opts.summary], [...rare, ...aliases, ...fuzzy]).length > 0
+      ? "summary"
+      : "first_prompt";
+  } else if (termsIn([opts.summary], [...rare, ...aliases, ...fuzzy]).length > 0) {
+    matchField = "summary";
+  } else if (termsIn([opts.firstPrompt], [...rare, ...aliases, ...fuzzy]).length > 0) {
+    matchField = "first_prompt";
+  } else {
+    matchField = "message";
+  }
+
+  const projectMatch =
+    !!opts.projectFilter || termsIn([opts.projectPath], [...rare, ...aliases, ...fuzzy]).length > 0;
+
+  const why: WhyMatched = {
+    matchType: opts.matchType,
+    matchedTerms,
+    matchField,
+    projectMatch,
+    score: opts.score,
+    ...(via ? { via } : {}),
+  };
+  const termList = matchedTerms.length > 0 ? matchedTerms.join(", ") : "(expansion)";
+  const whyText =
+    `${opts.matchType.toUpperCase()} match on [${termList}] in ${matchField}` +
+    `${via ? ` via ${via}` : ""}; score ${opts.score.toFixed(2)}`;
+  return { why, whyText };
 }
 
 export function search(
@@ -213,7 +325,25 @@ export function search(
     LIMIT ?
   `;
   const params = (opts.projectPath ? [fts, opts.projectPath, limit] : [fts, limit]) as (string | number)[];
-  return db.prepare(sql).all(...params) as unknown as SearchHit[];
+  const hits = db.prepare(sql).all(...params) as unknown as SearchHit[];
+  // search() runs a single OR query over messages_fts, so every hit matched in
+  // the message body via an OR of the query terms.
+  const terms = queryTerms(ftsTokens(q), q);
+  for (const h of hits) {
+    const { why, whyText } = explainHit({
+      terms,
+      matchType: "or",
+      score: h.score,
+      snippet: h.snippet,
+      summary: h.summary,
+      projectPath: h.projectPath,
+      projectFilter: !!opts.projectPath,
+      srcHint: "message",
+    });
+    h.why = why;
+    h.whyText = whyText;
+  }
+  return hits;
 }
 
 export function getProject(db: DatabaseSync, projectPath: string): {
@@ -266,27 +396,41 @@ export function findByTopicRanked(
 ): RankedTopicResult {
   const tokens = ftsTokens(description);
   if (tokens.length === 0) return { hits: [], matchType: "none" };
+  // `src` carries the winning FTS table ('message' vs 'session') to each row so
+  // provenance can report which field matched without a second query. We pick
+  // the min-score arm per session via ROW_NUMBER instead of MIN(s) so the src
+  // label travels with the score.
+  // `snip` carries the highlighted message body of the winning message arm so
+  // provenance can extract the literal matched terms (the session arm has no
+  // body, so its snip is NULL and matchedTerms come from summary/first_prompt).
   const sql = `
-    WITH per_msg AS (
-      SELECT session_id AS sid, bm25(messages_fts) AS s
+    WITH combined AS (
+      SELECT session_id AS sid, bm25(messages_fts) AS s, 'message' AS src,
+             snippet(messages_fts, 2, '[', ']', '...', 12) AS snip
       FROM messages_fts WHERE messages_fts MATCH ?
-    ),
-    per_sess AS (
-      SELECT session_id AS sid, bm25(sessions_fts) * 2 AS s
+      UNION ALL
+      SELECT session_id AS sid, bm25(sessions_fts) * 2 AS s, 'session' AS src, NULL AS snip
       FROM sessions_fts WHERE sessions_fts MATCH ?
     ),
-    combined AS (SELECT sid, s FROM per_msg UNION ALL SELECT sid, s FROM per_sess),
-    ranked AS (SELECT sid, MIN(s) AS score FROM combined GROUP BY sid)
+    ranked AS (
+      SELECT sid, s, src, snip,
+             ROW_NUMBER() OVER (PARTITION BY sid ORDER BY s ASC) AS rn
+      FROM combined
+    )
     SELECT s.id, s.project_path AS projectPath, s.summary, s.first_prompt AS firstPrompt,
            s.created, s.modified, s.git_branch AS gitBranch, s.message_count AS messageCount, s.jsonl_path AS jsonlPath,
            s.client AS client, s.outcome AS outcome,
-           r.score AS score
+           r.s AS score, r.src AS src, r.snip AS snip
     FROM ranked r JOIN sessions s ON s.id = r.sid
-    ORDER BY r.score ASC
+    WHERE r.rn = 1
+    ORDER BY r.s ASC
     LIMIT ?
   `;
-  const run = (fts: string): SessionRow[] =>
-    db.prepare(sql).all(fts, fts, limit) as unknown as SessionRow[];
+  const run = (fts: string): (SessionRow & { src?: string; snip?: string | null })[] =>
+    db.prepare(sql).all(fts, fts, limit) as unknown as (SessionRow & {
+      src?: string;
+      snip?: string | null;
+    })[];
   const { andQ, orQ } = buildFtsQueries(tokens, description);
   let hits = andQ ? run(andQ) : [];
   let matchType: MatchType = hits.length > 0 ? "and" : "none";
@@ -294,6 +438,25 @@ export function findByTopicRanked(
     if (orQ) {
       hits = run(orQ);
       if (hits.length > 0) matchType = "or";
+    }
+  }
+  if (matchType === "and" || matchType === "or") {
+    const terms = queryTerms(tokens, description);
+    for (const h of hits) {
+      const { why, whyText } = explainHit({
+        terms,
+        matchType,
+        score: h.score ?? 0,
+        snippet: h.snip ?? undefined,
+        summary: h.summary,
+        firstPrompt: h.firstPrompt,
+        projectPath: h.projectPath,
+        srcHint: h.src === "session" ? "session" : "message",
+      });
+      h.why = why;
+      h.whyText = whyText;
+      delete h.src; // internal-only; keep it out of the serialized result
+      delete h.snip;
     }
   }
   attachTopEditedPaths(db, hits);
@@ -384,9 +547,28 @@ export function findByTopicWithRecency(
   // ranker. The cap stays as defense-in-depth for OR-fallback cases.
   let sessions: SessionRow[] = [];
   const { andQ, orQ } = buildFtsQueries(tokens, description);
+  let matchType: "and" | "or" = "and";
   if (andQ) sessions = run(andQ);
   if (sessions.length === 0) {
-    if (orQ) sessions = run(orQ);
+    if (orQ) {
+      sessions = run(orQ);
+      matchType = "or";
+    }
+  }
+  // RRF fuses lanes, so the winning field is ambiguous — explainHit derives it
+  // from the returned summary/first_prompt text, defaulting to "message".
+  const terms = queryTerms(tokens, description);
+  for (const h of sessions) {
+    const { why, whyText } = explainHit({
+      terms,
+      matchType,
+      score: h.score ?? 0,
+      summary: h.summary,
+      firstPrompt: h.firstPrompt,
+      projectPath: h.projectPath,
+    });
+    h.why = why;
+    h.whyText = whyText;
   }
   attachTopEditedPaths(db, sessions);
   return sessions;

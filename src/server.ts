@@ -107,7 +107,7 @@ indexer.watchSources(SOURCES);
 const TOOLS = [
   {
     name: "search",
-    description: "BM25 full-text search across all indexed message content. Returns ranked snippets. KEYWORD-ONLY — synonyms and paraphrases will not match. Prefer rare/unique terms (codenames, hostnames, library names) over broad ones; if a query misses, retry with different vocabulary before concluding the data is absent.",
+    description: "BM25 full-text search across all indexed message content. Returns ranked snippets. KEYWORD-ONLY — synonyms and paraphrases will not match. Prefer rare/unique terms (codenames, hostnames, library names) over broad ones; if a query misses, retry with different vocabulary before concluding the data is absent. Each hit carries a `why`/`whyText` provenance block (matched terms, field, project match, bm25 score).",
     inputSchema: {
       type: "object",
       properties: {
@@ -130,7 +130,7 @@ const TOOLS = [
   {
     name: "find_by_topic",
     description:
-      "Keyword/BM25 ranking over session summaries and message contents. Returns past sessions whose text overlaps the given description. NOT semantic similarity — synonyms won't match. If a topic search misses, retry `search` with rarer/domain-specific terms (codenames, hostnames, error strings) rather than concluding the topic isn't indexed.",
+      "Keyword/BM25 ranking over session summaries and message contents. Returns past sessions whose text overlaps the given description. NOT semantic similarity — synonyms won't match. If a topic search misses, retry `search` with rarer/domain-specific terms (codenames, hostnames, error strings) rather than concluding the topic isn't indexed. Each result carries a `why`/`whyText` provenance block (matchType and/or, matched terms, field, score).",
     inputSchema: {
       type: "object",
       properties: {
@@ -249,7 +249,7 @@ const INSTRUCTIONS = [
   "PROJECT/PATH SEMANTICS:",
   "- For Claude Code: project_path = launch dir (encoded), not necessarily the edit target. Use files_touched or get_recent_by_edited_path to find sessions that edited a specific repo.",
   "- For Codex: project_path = the cwd from session_meta (real filesystem path).",
-  "- For Gemini: project_path = the registered project path (resolved from projectHash via ~/.gemini/projects.json), or the raw hash if unregistered.",
+  "- For Gemini: project_path = the registered project path (resolved from projectHash via ~/.gemini/projects.json), or the raw hash if unregistered. Gemini file activity (write_file/replace/read_file → native; run_shell_command redirects → inferred) is now extracted from each message's toolCalls array; pre-fix sessions need `momento --rebuild` to backfill.",
   "- Sessions returned by get_recent and get_project include topEditedPaths: the top 5 repo directories under MOMENTO_SRC_ROOTS (defaults to ~/src) where the session actually wrote/edited files.",
   "",
   "KNOWN GAPS (so you don't over-trust negative results):",

@@ -20,7 +20,51 @@
       "id": "m3",
       "type": "gemini",
       "content": "WebCodecs is a browser API for low-level encoding and decoding of audio and video frames.",
-      "timestamp": "2026-03-15T08:00:05Z"
+      "timestamp": "2026-03-15T08:00:05Z",
+      "toolCalls": [
+        {
+          "id": "t1",
+          "name": "write_file",
+          "args": { "file_path": "/Users/me/src/test-repo/out.ts", "content": "export const x = 1;" },
+          "status": "success",
+          "timestamp": "2026-03-15T08:00:06Z"
+        },
+        {
+          "id": "t2",
+          "name": "replace",
+          "args": { "file_path": "/Users/me/src/test-repo/edit.ts", "old_string": "a", "new_string": "b" },
+          "status": "success",
+          "timestamp": "2026-03-15T08:00:07Z"
+        },
+        {
+          "id": "t3",
+          "name": "read_file",
+          "args": { "file_path": "/Users/me/src/test-repo/read.ts" },
+          "status": "success",
+          "timestamp": "2026-03-15T08:00:08Z"
+        },
+        {
+          "id": "t4",
+          "name": "write_file",
+          "args": { "file_path": "/Users/me/src/test-repo/failed.ts", "content": "nope" },
+          "status": "error",
+          "timestamp": "2026-03-15T08:00:09Z"
+        },
+        {
+          "id": "t5",
+          "name": "run_shell_command",
+          "args": { "command": "echo generated > /Users/me/src/test-repo/gen.txt" },
+          "status": "success",
+          "timestamp": "2026-03-15T08:00:10Z"
+        },
+        {
+          "id": "t6",
+          "name": "mcp_serval_go",
+          "args": { "url": "https://example.com" },
+          "status": "success",
+          "timestamp": "2026-03-15T08:00:11Z"
+        }
+      ]
     }
   ]
 }

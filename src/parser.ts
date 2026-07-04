@@ -1,7 +1,8 @@
 import { createReadStream, realpathSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { inferShellFileTouches } from "./infer_touches.js";
 import {
   JsonlEntryZ,
   ParsedMessage,
@@ -37,7 +38,10 @@ export interface IndexedSessionMeta {
   projectPath?: string;
 }
 
-const FILE_TOOL_OP: Record<string, "read" | "write" | "edit"> = {
+// Exported so the conformance drift sentinel can assert the exact set of tool
+// names this parser recognizes as native file ops — an upstream rename fails a
+// test instead of silently dropping touches.
+export const FILE_TOOL_OP: Record<string, "read" | "write" | "edit"> = {
   Read: "read",
   Write: "write",
   Edit: "edit",
@@ -181,6 +185,27 @@ export async function parseSession(
               timestamp: a.data.timestamp,
               source: "native",
             });
+          }
+        }
+        // Bash commands write files via redirects (`>`, `tee`, `sed -i`, ...)
+        // that leave no structured file-tool call. Infer those targets and tag
+        // them `inferred` so they enrich files_touched without polluting the
+        // native path-views.
+        if (tu.name === "Bash") {
+          const command = (tu.input as { command?: string } | null)?.command;
+          if (typeof command === "string") {
+            for (const ft of inferShellFileTouches(command, a.data.timestamp)) {
+              let fp = ft.filePath;
+              if (isAbsolute(fp)) {
+                try {
+                  fp = realpathSync(fp);
+                } catch {
+                  /* file gone; keep literal */
+                }
+              }
+              if (pathExcluded(cfg, fp)) continue;
+              filesTouched.push({ ...ft, filePath: fp });
+            }
           }
         }
       }

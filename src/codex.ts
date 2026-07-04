@@ -14,15 +14,17 @@
 import { createReadStream, realpathSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { ParsedMessage, ToolCall, FileTouch } from "./types.js";
 import type { SessionRef, ParsedSession, IndexedSessionMeta } from "./parser.js";
 import { MomentoConfig, loadConfig, pathExcluded } from "./config.js";
+import { inferShellFileTouches, extractShellCommand } from "./infer_touches.js";
 
 // File path tools across the OpenAI CLI. The keys we know to extract are best-
 // effort — Codex tools are user-configurable, so this list will drift. We index
 // the standard built-ins and let everything else fall through.
-const FILE_TOOL_OP: Record<string, "read" | "write" | "edit"> = {
+// Exported so the conformance drift sentinel can pin the recognized set.
+export const FILE_TOOL_OP: Record<string, "read" | "write" | "edit"> = {
   shell: "read", // ambiguous; kept as inferred provenance only
   read_file: "read",
   write_file: "write",
@@ -233,6 +235,18 @@ export async function parseCodexSession(
           typeof ri.arguments === "string" ? ri.arguments : JSON.stringify(ri.arguments ?? null);
         toolCalls.push({ toolName: name, inputJson: argsJson, timestamp: ts });
         recordFileTouch(name, argsJson, ts, cfg, filesTouched);
+        // The `shell` tool carries a full command; infer redirect/writer targets
+        // (tagged `inferred`) that the structured path arg misses.
+        if (name === "shell") {
+          let parsedArgs: unknown;
+          try {
+            parsedArgs = JSON.parse(argsJson);
+          } catch {
+            parsedArgs = null;
+          }
+          const command = extractShellCommand(parsedArgs);
+          if (command) recordInferredShellTouches(command, ts, cfg, filesTouched);
+        }
       }
       // function_call_output is informational; we already emitted the call.
       continue;
@@ -301,4 +315,28 @@ function recordFileTouch(
     timestamp,
     source: toolName === "shell" ? "inferred" : "native",
   });
+}
+
+// Shared wiring for inferred shell-command touches: canonicalize absolute paths,
+// apply path exclusions, and push. Relative targets are kept verbatim — they
+// won't bucket to a repo, which is fine since inferred touches never feed the
+// native path-views.
+function recordInferredShellTouches(
+  command: string,
+  timestamp: string,
+  cfg: MomentoConfig,
+  out: FileTouch[],
+): void {
+  for (const ft of inferShellFileTouches(command, timestamp)) {
+    let fp = ft.filePath;
+    if (isAbsolute(fp)) {
+      try {
+        fp = realpathSync(fp);
+      } catch {
+        /* file gone; keep literal */
+      }
+    }
+    if (pathExcluded(cfg, fp)) continue;
+    out.push({ ...ft, filePath: fp });
+  }
 }
