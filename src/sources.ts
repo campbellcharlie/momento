@@ -14,7 +14,7 @@ import { iterateSessions, parseSession, readSessionsIndex } from "./parser.js";
 import { iterateCodexSessions, parseCodexSession } from "./codex.js";
 import { iterateGeminiSessions, parseGeminiSession } from "./gemini.js";
 
-export type ClientName = "claude_code" | "codex" | "gemini";
+export type ClientName = "claude_code" | "codex" | "gemini" | "halo";
 
 export interface ParsedSessionWithMeta extends ParsedSession {
   // Optional metadata derived by the parser itself (set by Codex/Gemini, where
@@ -62,6 +62,15 @@ export function defaultSources(home: string = homedir()): Source[] {
       fileExt: ".jsonl",
       iterate: iterateCodexSessions,
       parse: parseCodexSession,
+    },
+    {
+      // Halo harness writes Claude-Code-shape JSONL to ~/.halo/sessions/<project>/<id>.jsonl,
+      // so it reuses the Claude parser. No sessions-index sidecar (meta stays default).
+      client: "halo",
+      root: join(home, ".halo", "sessions"),
+      fileExt: ".jsonl",
+      iterate: iterateSessions,
+      parse: parseSession,
     },
     {
       client: "gemini",
