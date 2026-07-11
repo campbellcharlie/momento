@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { Indexer, defaultSources } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown, findByTopicWithRecency } from "./queries.js";
+import { aggregateLedger } from "./ledger.js";
 import { ALL_CATEGORIES } from "./classifier.js";
 import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
 import { startWebServer } from "./web/server.js";
@@ -235,6 +236,18 @@ const TOOLS = [
       required: ["session_id"],
     },
   },
+  {
+    name: "aggregate_ledger",
+    description:
+      "Structured aggregation over ISE `ledger.jsonl` files (append-only task-closure rows) found under MOMENTO_SRC_ROOTS. Unlike keyword search, this returns NUMBERS: idea_quality (positive/negative outcomes grouped by persona × stack × class — the 'what worked' assignment signal) and harness_health (share of tasks that died to tooling/refusal, which nobody else tracks). Read-only over on-disk ledgers; returns an empty result if no ledger.jsonl files exist. Optionally filter by module or stack.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        module: { type: "string", description: "Optional: restrict to one module (e.g. pentest, dev, research)" },
+        stack: { type: "string", description: "Optional: restrict to one stack fingerprint" },
+      },
+    },
+  },
 ];
 
 const INSTRUCTIONS = [
@@ -320,6 +333,11 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
     }
     case "session_category_breakdown":
       return sessionCategoryBreakdown(indexer.db, String(args.session_id ?? ""));
+    case "aggregate_ledger":
+      return aggregateLedger({
+        module: typeof args.module === "string" ? args.module : undefined,
+        stack: typeof args.stack === "string" ? args.stack : undefined,
+      });
     default:
       throw new Error(`unknown tool: ${name}`);
   }
