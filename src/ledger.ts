@@ -31,8 +31,13 @@ const SKIP_DIRS = new Set(["node_modules", "dist", "build", ".next", ".worktrees
 // Roots to scan for ledgers. Mirrors momento's MOMENTO_SRC_ROOTS convention (defaults to ~/src).
 export function ledgerRoots(env: NodeJS.ProcessEnv = process.env): string[] {
   const raw = env.MOMENTO_SRC_ROOTS;
-  if (raw) return raw.split(/[:,]/).map((s) => s.trim()).filter(Boolean);
-  return [join(homedir(), "src")];
+  const roots = raw
+    ? raw.split(/[:,]/).map((s) => s.trim()).filter(Boolean)
+    : [join(homedir(), "src")];
+  // ISE's canonical ledger lives in ~/.ise (or $ISE_HOME) — outside the src roots, and inside a
+  // dot-dir the walk would otherwise skip — so add it explicitly.
+  roots.push(env.ISE_HOME || join(homedir(), ".ise"));
+  return [...new Set(roots)];
 }
 
 // Bounded recursive walk for files literally named `ledger.jsonl`.
