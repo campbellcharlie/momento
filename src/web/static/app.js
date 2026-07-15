@@ -59,7 +59,7 @@ const SCOPE_DAYS_BY_LABEL = { "14d": 14, "30d": 30, "90d": 90, "all": 730 };
 let scopeRangeLabel = persist.get("scopeRange", "14d");
 if (!(scopeRangeLabel in SCOPE_DAYS_BY_LABEL)) scopeRangeLabel = "14d";
 let scopeDay = persist.get("scopeDay", "");
-// scopeRepo: a bucketed repo path (e.g. "/Volumes/.../src/momento"). Set by
+// scopeRepo: a bucketed repo path (e.g. "/abs/path/src/momento"). Set by
 // clicking a lane in the Repos panel; intersects with all other filters.
 let scopeRepo = persist.get("scopeRepo", "");
 let currentSession = null;

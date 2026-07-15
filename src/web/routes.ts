@@ -190,7 +190,7 @@ export function handleRecent(_req: IncomingMessage, res: ServerResponse, ctx: Ro
   // on the day it was last active. Validated as a date-shape string before
   // hitting SQL (defense-in-depth; the param goes through a bound `?` too).
   const day = getQuery(url, "day");
-  // repo filter: a bucketed repo root (e.g. "/Volumes/.../src/momento")
+  // repo filter: a bucketed repo root (e.g. "/abs/path/src/momento")
   // intersected against sessions whose topEditedPaths contain it. The
   // bucket strings come from getRepoBreakdown so the value space matches.
   const repo = getQuery(url, "repo");

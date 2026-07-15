@@ -170,7 +170,7 @@ export async function parseSession(
           const fp = (tu.input as { file_path?: string } | null)?.file_path;
           if (typeof fp === "string" && fp) {
             // Resolve symlinks so the same repo doesn't get indexed under two prefixes
-            // (e.g. ~/src -> /Volumes/Raid1_Storage/src). Falls back to the raw path
+            // (e.g. ~/src -> /abs/path/src). Falls back to the raw path
             // if the file no longer exists.
             let canonical = fp;
             try {
@@ -213,7 +213,7 @@ export async function parseSession(
   }
 
   // Canonicalize the captured cwd so symlinked roots collapse to the same
-  // project_path across sessions (e.g. ~/src -> /Volumes/Raid1_Storage/src).
+  // project_path across sessions (e.g. ~/src -> /abs/path/src).
   // Falls back silently if the path is gone — the encoded projectDir will
   // be used as the project_path instead in indexer.
   let resolvedCwd: string | undefined;

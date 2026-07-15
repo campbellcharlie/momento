@@ -597,7 +597,7 @@ export function getRecentByEditedPath(
 ): SessionRow[] {
   // Find sessions that have at least one write/edit touch under `path` (prefix match),
   // then return them ordered by most recently modified, with topEditedPaths attached.
-  // Canonicalize so e.g. ~/src/foo matches stored /Volumes/Raid1_Storage/src/foo.
+  // Canonicalize so e.g. ~/src/foo matches stored /abs/path/src/foo.
   const like = `${canonicalize(path)}%`;
   const sessions = db
     .prepare(

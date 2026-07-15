@@ -220,7 +220,7 @@ momento --help
 - **Stale results / out-of-sync DB:** `momento --rebuild` (or `rm ~/.momento/index.db`
   and restart the MCP server).
 - **Edits stored under non-canonical paths** (e.g. `/Users/you/src/...` when the
-  canonical path is `/Volumes/.../src/...`): the indexer canonicalizes via
+  canonical path is `/abs/path/src/...`): the indexer canonicalizes via
   `realpath` going forward, but pre-existing rows aren't rewritten. A
   `momento --rebuild` fixes them.
 - **`topEditedPaths` is empty:** the session only edited files outside
