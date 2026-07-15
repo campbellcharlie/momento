@@ -59,9 +59,10 @@ function makePaths() {
       dbPath: join(work, "index.db"),
       projectsRoot,
       ignoreFile: join(work, ".momentoignore"),
-      // Isolate from real ~/.codex / ~/.gemini history during tests.
+      // Isolate from real ~/.codex / ~/.gemini / ~/.halo history during tests.
       codexRoot: join(work, "no-codex"),
       geminiRoot: join(work, "no-gemini"),
+      haloRoot: join(work, "no-halo"),
     },
   };
 }

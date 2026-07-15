@@ -13,6 +13,7 @@ function sourcesFromPaths(paths: AdminPaths): Source[] {
     if (s.client === "claude_code") return { ...s, root: paths.projectsRoot };
     if (s.client === "codex" && paths.codexRoot !== undefined) return { ...s, root: paths.codexRoot };
     if (s.client === "gemini" && paths.geminiRoot !== undefined) return { ...s, root: paths.geminiRoot };
+    if (s.client === "halo" && paths.haloRoot !== undefined) return { ...s, root: paths.haloRoot };
     return s;
   });
 }
@@ -23,10 +24,11 @@ export interface AdminPaths {
   projectsRoot: string;
   ignoreFile: string;
   // Optional per-client roots. When undefined, sourcesFromPaths() falls back
-  // to the default homedir-based locations (~/.codex/sessions, ~/.gemini/tmp).
+  // to the default homedir-based locations (~/.codex/sessions, ~/.gemini/tmp, ~/.halo/sessions).
   // Tests pass nonexistent paths here to isolate real CLI history during runs.
   codexRoot?: string;
   geminiRoot?: string;
+  haloRoot?: string;
 }
 
 export function defaultPaths(): AdminPaths {
@@ -38,6 +40,7 @@ export function defaultPaths(): AdminPaths {
     ignoreFile: join(home, ".momentoignore"),
     codexRoot: join(home, ".codex", "sessions"),
     geminiRoot: join(home, ".gemini", "tmp"),
+    haloRoot: join(home, ".halo", "sessions"),
   };
 }
 
