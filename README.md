@@ -102,6 +102,7 @@ All tools return JSON. Sessions from `get_recent`, `get_project`, and `get_recen
 | `get_recent` | `n?=20`, `project_path?` | `Session[]` (modified desc) |
 | `files_touched` | `pattern: string` (SQL `LIKE`) | `[{ sessionId, filePath, operation, source, projectPath, summary }]` |
 | `get_recent_by_edited_path` | `path: string` (prefix), `n?=20` | `Session[]` whose **native** write/edit touches start with `path` |
+| `aggregate_ledger` | `module?`, `stack?` (filters) | Rollup **numbers** (not transcripts) over [ISE](https://github.com/campbellcharlie/ISE) task-closure ledgers: `idea_quality` (outcomes by persona × stack × class) + `harness_health`. |
 
 <details>
 <summary><strong>A <code>Session</code> row</strong></summary>
@@ -185,7 +186,7 @@ momento/
     cli.ts          ← momento-inject (UserPromptSubmit hook)
     admin.ts        ← momento CLI: --status / --doctor / --rebuild / --explain-exclusions
     indexer.ts      ← builds the SQLite index from the client sources
-    sources.ts      ← per-client roots (claude_code / codex / gemini / halo)
+    sources.ts      ← per-client transcript roots (claude_code / codex / gemini)
     parser.ts codex.ts gemini.ts   ← per-client transcript parsers
     queries.ts      ← search / recency / edited-path queries (FTS5 + bucketing)
     ledger.ts       ← aggregate_ledger over ISE ledgers (~/.ise)
