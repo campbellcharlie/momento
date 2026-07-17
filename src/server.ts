@@ -8,6 +8,7 @@ import { aggregateLedger } from "./ledger.js";
 import { ALL_CATEGORIES } from "./classifier.js";
 import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
 import { startWebServer } from "./web/server.js";
+import { formatToolResult } from "./format.js";
 
 const HOME = homedir();
 const DB_DIR = join(HOME, ".momento");
@@ -398,7 +399,7 @@ function handleMessage(req: JsonRpcRequest): void {
       try {
         const result = callTool(name, args);
         sendResult(id, {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: formatToolResult(name, result) }],
         });
       } catch (err) {
         // Tool failures are reported in-band, not as JSON-RPC errors.
