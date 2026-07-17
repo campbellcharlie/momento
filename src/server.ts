@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { Indexer, defaultSources } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown, findByTopicWithRecency } from "./queries.js";
 import { aggregateLedger } from "./ledger.js";
+import { searchLedger, searchAudit, indexExternalFast } from "./external.js";
 import { ALL_CATEGORIES } from "./classifier.js";
 import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
 import { startWebServer } from "./web/server.js";
@@ -249,6 +250,38 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: "search_ledger",
+    description:
+      "Keyword search (FTS5/BM25) over ISE `ledger.jsonl` task-closure rows — the narrative fields (conjecture/refuted/learned/criterion, ids, outcomes). Use to recall 'the ISA/closure where I dealt with X'. Complements aggregate_ledger (which returns numbers, not text). OPTIONAL & additive: returns [] if no ledger exists. Optionally filter by outcome or class.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords (rare/unique terms rank best; keyword-only, no synonyms)" },
+        outcome: { type: "string", description: "Optional: restrict to one outcome (cracked, shipped, misfit, …)" },
+        klass: { type: "string", description: "Optional: restrict to one class/vuln_class" },
+        limit: { type: "number", description: "Max hits (default 20)" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "search_audit",
+    description:
+      "Keyword search (FTS5/BM25) over marshal's `audit.jsonl` tool-call trail — which backend tool ran, when, ok/latency, redacted arg keys. Use to recall 'when did I call serval.navigate' or 'what momento tools ran'. Results are newest-first. OPTIONAL & additive: returns [] if no marshal audit exists. Optionally filter by backend, tool, ok, or since (ISO ts).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords over backend.tool / event / arg keys (keyword-only)" },
+        backend: { type: "string", description: "Optional: restrict to one backend (momento, serval, …)" },
+        tool: { type: "string", description: "Optional: restrict to one backend tool name" },
+        ok: { type: "boolean", description: "Optional: only successful (true) or failed (false) calls" },
+        since: { type: "string", description: "Optional: only calls at/after this ISO timestamp" },
+        limit: { type: "number", description: "Max hits (default 20)" },
+      },
+      required: ["query"],
+    },
+  },
 ];
 
 const INSTRUCTIONS = [
@@ -338,6 +371,22 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       return aggregateLedger({
         module: typeof args.module === "string" ? args.module : undefined,
         stack: typeof args.stack === "string" ? args.stack : undefined,
+      });
+    case "search_ledger":
+      indexExternalFast(indexer.db); // refresh canonical sources (no ~/src walk, mtime-gated → cheap)
+      return searchLedger(indexer.db, String(args.query ?? ""), {
+        outcome: typeof args.outcome === "string" ? args.outcome : undefined,
+        klass: typeof args.klass === "string" ? args.klass : undefined,
+        limit: typeof args.limit === "number" ? args.limit : undefined,
+      });
+    case "search_audit":
+      indexExternalFast(indexer.db);
+      return searchAudit(indexer.db, String(args.query ?? ""), {
+        backend: typeof args.backend === "string" ? args.backend : undefined,
+        tool: typeof args.tool === "string" ? args.tool : undefined,
+        ok: typeof args.ok === "boolean" ? args.ok : undefined,
+        since: typeof args.since === "string" ? args.since : undefined,
+        limit: typeof args.limit === "number" ? args.limit : undefined,
       });
     default:
       throw new Error(`unknown tool: ${name}`);

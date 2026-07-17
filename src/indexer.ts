@@ -7,6 +7,7 @@ import { MomentoConfig, loadConfig, projectExcluded } from "./config.js";
 import { ClientName, Source, defaultSources } from "./sources.js";
 import { buildTurns, classifyTurn } from "./classifier.js";
 import { detectOutcome } from "./outcome.js";
+import { indexLedgerInto, indexAuditInto } from "./external.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -58,6 +59,23 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_name ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_file_touches_path ON file_touches(file_path);
 CREATE INDEX IF NOT EXISTS idx_turn_categories_category ON turn_categories(category);
+-- External append-only sources (ISE ledger, marshal audit). Optional & additive: populated only if the
+-- files exist; re-ingested per-file on mtime change (tracked in external_sources). See external.ts.
+CREATE TABLE IF NOT EXISTS external_sources (
+  path TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  mtime TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS ledger_fts USING fts5(
+  source_path UNINDEXED, entry_id UNINDEXED, outcome UNINDEXED, module UNINDEXED,
+  stack UNINDEXED, klass UNINDEXED, ts UNINDEXED, content,
+  tokenize = 'porter unicode61'
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS audit_fts USING fts5(
+  source_path UNINDEXED, backend UNINDEXED, tool UNINDEXED, event UNINDEXED,
+  ok UNINDEXED, ms UNINDEXED, ts UNINDEXED, content,
+  tokenize = 'porter unicode61'
+);
 `;
 // idx_sessions_client lives in migrate() so the index isn't built against a
 // table that pre-dates the `client` column. SCHEMA has to be safe to apply
@@ -68,7 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_turn_categories_category ON turn_categories(categ
 // columns/tables. Migrations are idempotent — they read PRAGMA user_version and
 // ALTER only if needed. Existing rows get sane defaults so the DB is queryable
 // before the first reindex.
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 function migrate(db: DatabaseSync): void {
   const cur = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -116,6 +134,11 @@ function migrate(db: DatabaseSync): void {
     if (!cols.some((c) => c.name === "outcome")) {
       db.exec("ALTER TABLE sessions ADD COLUMN outcome TEXT");
     }
+  }
+  if (cur < 6) {
+    // v6: add external_sources + ledger_fts + audit_fts for indexing ISE ledger + marshal audit.
+    // SCHEMA above already CREATE IF NOT EXISTS'd them; this is the explicit version marker. They stay
+    // empty (and every external search returns []) until the sources exist and get indexed — never errors.
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
@@ -234,6 +257,15 @@ export class Indexer {
         onProgress?.({ done, current: ref.jsonlPath });
       }
     }
+    this.indexExternal();
+  }
+
+  // Index the optional external append-only sources (ISE ledger, marshal audit). Each is re-ingested
+  // only on mtime change, so this is cheap to call opportunistically (rebuild, and before an external
+  // search). Absent sources are a no-op — momento works fully without ISE or marshal.
+  indexExternal(): void {
+    try { indexLedgerInto(this.db); } catch (e) { process.stderr.write(`momento: ledger index skipped: ${(e as Error).message}\n`); }
+    try { indexAuditInto(this.db); } catch (e) { process.stderr.write(`momento: audit index skipped: ${(e as Error).message}\n`); }
   }
 
   // Single-source convenience for the original Claude Code watcher.
