@@ -96,7 +96,10 @@ export function runConsolidate(paths: AdminPaths = defaultPaths()): void {
   const indexer = new Indexer(paths.dbPath, loadConfig({ ignoreFile: paths.ignoreFile }));
   try {
     indexExternalFast(indexer.db);                          // make sure audit_fts is fresh before we read it
-    const r = consolidateInto(indexer.db);
+    // Canonical ledger only (~/.ise) — do NOT walk MOMENTO_SRC_ROOTS/~/src. That walk hits the RAID volume
+    // and under cron (cold cache) it stalls for minutes while holding a write txn; the hot path avoids it
+    // for the same reason. Per-project ledgers are excluded from facts here by design (speed + headless safety).
+    const r = consolidateInto(indexer.db, { ledgerRoots: [process.env.ISE_HOME || join(homedir(), ".ise")] });
     process.stdout.write(
       `momento: consolidated — ${r.total_current} current facts ` +
         `(${r.tool_reliability} tool-reliability, ${r.ledger_pattern} ledger-pattern; ${r.changed} changed this pass)\n`,
