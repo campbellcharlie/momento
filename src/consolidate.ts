@@ -1,5 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { aggregateLedger, ledgerRoots } from "./ledger.js";
+import { indexExternalFast } from "./external.js";
 
 // Memory consolidation — the "sleep pass". momento's other tables are RAW EPISODIC records (every
 // session, tool call, ledger row, audit line kept verbatim). This derives a small set of SEMANTIC FACTS
@@ -93,6 +96,21 @@ export function consolidateInto(db: DatabaseSync, opts: ConsolidateOpts = {}): C
   } catch (e) { db.exec("ROLLBACK"); throw e; }
   const total = (db.prepare("SELECT COUNT(*) AS n FROM facts WHERE valid_to IS NULL").get() as { n: number }).n;
   return { tool_reliability: toolFacts, ledger_pattern: ledgerFacts, changed, total_current: total };
+}
+
+// Canonical ISE ledger only (~/.ise / $ISE_HOME) — never the MOMENTO_SRC_ROOTS/~/src walk. That walk is
+// slow cold and, on a RAID/external volume, stalls under a headless (cron) context; the FTS hot path avoids
+// it for the same reason.
+export function canonicalLedgerRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+  return [env.ISE_HOME || join(homedir(), ".ise")];
+}
+
+// Refresh the external sources then re-derive facts, in one cheap (~0.1s) call. This is what makes a
+// scheduler unnecessary: recall_facts calls it right before reading, so facts always reflect the latest
+// marshal audit + ISE ledger (mirrors how search_ledger/search_audit refresh via indexExternalFast).
+export function refreshAndConsolidate(db: DatabaseSync, env: NodeJS.ProcessEnv = process.env): ConsolidateResult {
+  indexExternalFast(db, env);                                // audit_fts + canonical ledger_fts fresh (mtime-gated)
+  return consolidateInto(db, { ledgerRoots: canonicalLedgerRoots(env) });
 }
 
 export interface FactHit {
