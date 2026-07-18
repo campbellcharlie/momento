@@ -6,8 +6,9 @@ import { Indexer, defaultSources } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown, findByTopicWithRecency } from "./queries.js";
 import { aggregateLedger } from "./ledger.js";
 import { searchLedger, searchAudit, indexExternalFast } from "./external.js";
+import { searchFacts } from "./consolidate.js";
 import { ALL_CATEGORIES } from "./classifier.js";
-import { runRebuild, runStatus, runDoctor, runExplainExclusions, defaultPaths } from "./admin.js";
+import { runRebuild, runStatus, runDoctor, runConsolidate, runExplainExclusions, defaultPaths } from "./admin.js";
 import { startWebServer } from "./web/server.js";
 import { formatToolResult } from "./format.js";
 
@@ -57,6 +58,10 @@ if (argv.includes("--status")) {
 }
 if (argv.includes("--doctor")) {
   process.exit(runDoctor(defaultPaths()));
+}
+if (argv.includes("--consolidate")) {
+  runConsolidate(defaultPaths());
+  process.exit(0);
 }
 {
   // Allow `--explain-exclusions` with or without a path argument. The path,
@@ -282,6 +287,20 @@ const TOOLS = [
       required: ["query"],
     },
   },
+  {
+    name: "recall_facts",
+    description:
+      "Recall CONSOLIDATED SEMANTIC FACTS distilled from history (not raw sessions) — durable claims like tool reliability ('momento.search: 48/50 calls succeeded') and outcome patterns from the ISE ledger ('persona × stack × class: 6/7 positive'). Each carries a confidence, support count (n), and provenance. Use to ask 'what have I learned about X' instead of re-reading transcripts. OPTIONAL & additive: returns [] until `momento --consolidate` has run. Filter by kind (tool_reliability | ledger_pattern) or subject; omit query to list the highest-confidence facts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Optional keywords over the fact statement/subject (omit to list by confidence)" },
+        kind: { type: "string", description: "Optional: 'tool_reliability' or 'ledger_pattern'" },
+        subject: { type: "string", description: "Optional: exact subject (e.g. 'momento.search')" },
+        limit: { type: "number", description: "Max facts (default 20)" },
+      },
+    },
+  },
 ];
 
 const INSTRUCTIONS = [
@@ -386,6 +405,13 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         tool: typeof args.tool === "string" ? args.tool : undefined,
         ok: typeof args.ok === "boolean" ? args.ok : undefined,
         since: typeof args.since === "string" ? args.since : undefined,
+        limit: typeof args.limit === "number" ? args.limit : undefined,
+      });
+    case "recall_facts":
+      return searchFacts(indexer.db, {
+        query: typeof args.query === "string" ? args.query : undefined,
+        kind: typeof args.kind === "string" ? args.kind : undefined,
+        subject: typeof args.subject === "string" ? args.subject : undefined,
         limit: typeof args.limit === "number" ? args.limit : undefined,
       });
     default:
