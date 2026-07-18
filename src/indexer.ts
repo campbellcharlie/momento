@@ -76,6 +76,28 @@ CREATE VIRTUAL TABLE IF NOT EXISTS audit_fts USING fts5(
   ok UNINDEXED, ms UNINDEXED, ts UNINDEXED, content,
   tokenize = 'porter unicode61'
 );
+-- Consolidated SEMANTIC FACTS derived from the raw episodic tables above (see consolidate.ts). Kept in a
+-- separate table so raw source rows are never rewritten. Bi-temporal: valid_to IS NULL = currently
+-- believed; a superseded fact keeps its row with valid_to set (invalidate, don't delete).
+CREATE TABLE IF NOT EXISTS facts (
+  fact_id INTEGER PRIMARY KEY,
+  id TEXT NOT NULL,                 -- logical key (e.g. 'tool:momento.search'); many rows share it over time
+  kind TEXT NOT NULL,              -- 'tool_reliability' | 'ledger_pattern' | …
+  subject TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  n INTEGER NOT NULL,              -- support: how many observations back this fact
+  provenance TEXT,                -- JSON: the numbers/sources it was derived from
+  valid_from TEXT NOT NULL,
+  valid_to TEXT,                  -- NULL = current belief; set = invalidated at this time
+  updated TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_facts_current ON facts(id, valid_to);
+CREATE INDEX IF NOT EXISTS idx_facts_kind ON facts(kind, valid_to);
+CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+  fact_id UNINDEXED, kind UNINDEXED, subject, statement,
+  tokenize = 'porter unicode61'
+);
 `;
 // idx_sessions_client lives in migrate() so the index isn't built against a
 // table that pre-dates the `client` column. SCHEMA has to be safe to apply
@@ -86,7 +108,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS audit_fts USING fts5(
 // columns/tables. Migrations are idempotent — they read PRAGMA user_version and
 // ALTER only if needed. Existing rows get sane defaults so the DB is queryable
 // before the first reindex.
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 function migrate(db: DatabaseSync): void {
   const cur = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -139,6 +161,10 @@ function migrate(db: DatabaseSync): void {
     // v6: add external_sources + ledger_fts + audit_fts for indexing ISE ledger + marshal audit.
     // SCHEMA above already CREATE IF NOT EXISTS'd them; this is the explicit version marker. They stay
     // empty (and every external search returns []) until the sources exist and get indexed — never errors.
+  }
+  if (cur < 7) {
+    // v7: add facts + facts_fts for memory consolidation (consolidate.ts). SCHEMA above already CREATE IF
+    // NOT EXISTS'd them; explicit version marker. Stay empty until `momento --consolidate` runs — additive.
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }

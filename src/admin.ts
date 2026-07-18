@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Indexer, defaultSources, type Source } from "./indexer.js";
 import { loadConfig, type Rule } from "./config.js";
+import { indexExternalFast } from "./external.js";
+import { consolidateInto } from "./consolidate.js";
 
 // Resolve the source set for admin operations. Each per-client field on
 // `paths` overrides the corresponding default root; missing fields fall back
@@ -81,6 +83,27 @@ export async function runRebuild(paths: AdminPaths = defaultPaths()): Promise<vo
   const count = (indexer.db.prepare(`SELECT COUNT(*) AS n FROM sessions`).get() as { n: number }).n;
   indexer.close();
   process.stdout.write(`momento: rebuild complete — ${count} sessions, db ${fmtBytes(fileSize(paths.dbPath))}\n`);
+}
+
+// The "sleep pass": refresh the canonical external sources (marshal audit, ISE ledger — mtime-gated, no
+// ~/src walk) then derive/refresh semantic facts. Additive and idempotent; safe to run from cron or
+// SessionStart. No-op-safe when the DB or sources are absent.
+export function runConsolidate(paths: AdminPaths = defaultPaths()): void {
+  if (!existsSync(paths.dbPath)) {
+    process.stdout.write(`momento: no index at ${paths.dbPath} (run \`momento --rebuild\` first)\n`);
+    return;
+  }
+  const indexer = new Indexer(paths.dbPath, loadConfig({ ignoreFile: paths.ignoreFile }));
+  try {
+    indexExternalFast(indexer.db);                          // make sure audit_fts is fresh before we read it
+    const r = consolidateInto(indexer.db);
+    process.stdout.write(
+      `momento: consolidated — ${r.total_current} current facts ` +
+        `(${r.tool_reliability} tool-reliability, ${r.ledger_pattern} ledger-pattern; ${r.changed} changed this pass)\n`,
+    );
+  } finally {
+    indexer.close();
+  }
 }
 
 export function runStatus(paths: AdminPaths = defaultPaths()): void {
