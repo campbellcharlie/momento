@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Indexer } from "../dist/indexer.js";
 import { indexAuditInto } from "../dist/external.js";
-import { consolidateInto, searchFacts } from "../dist/consolidate.js";
+import { consolidateInto, searchFacts, refreshAndConsolidate } from "../dist/consolidate.js";
 
 function freshDb() {
   const dir = mkdtempSync(join(tmpdir(), "mcons-"));
@@ -89,6 +89,21 @@ test("idempotent: re-running an unchanged pass adds no new fact rows", () => {
   consolidateInto(indexer.db, { ledgerRoots: [dir], now: "2026-07-18T12:05:00Z" });
   const n = indexer.db.prepare("SELECT COUNT(*) AS n FROM facts").get().n;
   assert.equal(n, 1, "no duplicate/archived rows when the claim is unchanged");
+  indexer.close();
+});
+
+test("consolidate-on-read: refreshAndConsolidate surfaces NEW audit rows without a manual pass (the recall_facts hot path)", () => {
+  const { indexer, dir } = freshDb();
+  const audit = join(dir, "audit.jsonl");
+  const env = { ...process.env, MARSHAL_AUDIT: audit, ISE_HOME: join(dir, "noledger") }; // isolate from real ~/.marshal + ~/.ise
+  writeAudit(audit, [call("alpha", "one", true), call("alpha", "one", true), call("alpha", "one", true)]);
+  refreshAndConsolidate(indexer.db, env);
+  assert.deepEqual(searchFacts(indexer.db, { kind: "tool_reliability" }).map((f) => f.subject), ["alpha.one"]);
+
+  // a NEW tool shows up in the audit; the very next read must reflect it — no separate consolidate call.
+  writeAudit(audit, [call("alpha", "one", true), call("alpha", "one", true), call("alpha", "one", true), call("beta", "two", true), call("beta", "two", true), call("beta", "two", true)]);
+  refreshAndConsolidate(indexer.db, env);
+  assert.deepEqual(searchFacts(indexer.db, { kind: "tool_reliability" }).map((f) => f.subject).sort(), ["alpha.one", "beta.two"]);
   indexer.close();
 });
 
