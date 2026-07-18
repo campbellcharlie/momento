@@ -6,7 +6,7 @@ import { Indexer, defaultSources } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown, findByTopicWithRecency } from "./queries.js";
 import { aggregateLedger } from "./ledger.js";
 import { searchLedger, searchAudit, indexExternalFast } from "./external.js";
-import { searchFacts } from "./consolidate.js";
+import { searchFacts, refreshAndConsolidate } from "./consolidate.js";
 import { ALL_CATEGORIES } from "./classifier.js";
 import { runRebuild, runStatus, runDoctor, runConsolidate, runExplainExclusions, defaultPaths } from "./admin.js";
 import { startWebServer } from "./web/server.js";
@@ -290,7 +290,7 @@ const TOOLS = [
   {
     name: "recall_facts",
     description:
-      "Recall CONSOLIDATED SEMANTIC FACTS distilled from history (not raw sessions) — durable claims like tool reliability ('momento.search: 48/50 calls succeeded') and outcome patterns from the ISE ledger ('persona × stack × class: 6/7 positive'). Each carries a confidence, support count (n), and provenance. Use to ask 'what have I learned about X' instead of re-reading transcripts. OPTIONAL & additive: returns [] until `momento --consolidate` has run. Filter by kind (tool_reliability | ledger_pattern) or subject; omit query to list the highest-confidence facts.",
+      "Recall CONSOLIDATED SEMANTIC FACTS distilled from history (not raw sessions) — durable claims like tool reliability ('momento.search: 48/50 calls succeeded') and outcome patterns from the ISE ledger ('persona × stack × class: 6/7 positive'). Each carries a confidence, support count (n), and provenance. Use to ask 'what have I learned about X' instead of re-reading transcripts. Facts are re-derived on read from the latest marshal audit + ISE ledger, so they're always current (returns [] only if there's nothing to consolidate yet). Filter by kind (tool_reliability | ledger_pattern) or subject; omit query to list the highest-confidence facts.",
     inputSchema: {
       type: "object",
       properties: {
@@ -408,6 +408,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         limit: typeof args.limit === "number" ? args.limit : undefined,
       });
     case "recall_facts":
+      refreshAndConsolidate(indexer.db); // re-derive facts from the latest audit+ledger before reading (~0.1s → always fresh, no scheduler)
       return searchFacts(indexer.db, {
         query: typeof args.query === "string" ? args.query : undefined,
         kind: typeof args.kind === "string" ? args.kind : undefined,

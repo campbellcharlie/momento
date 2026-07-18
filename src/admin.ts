@@ -3,8 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Indexer, defaultSources, type Source } from "./indexer.js";
 import { loadConfig, type Rule } from "./config.js";
-import { indexExternalFast } from "./external.js";
-import { consolidateInto } from "./consolidate.js";
+import { refreshAndConsolidate } from "./consolidate.js";
 
 // Resolve the source set for admin operations. Each per-client field on
 // `paths` overrides the corresponding default root; missing fields fall back
@@ -95,11 +94,7 @@ export function runConsolidate(paths: AdminPaths = defaultPaths()): void {
   }
   const indexer = new Indexer(paths.dbPath, loadConfig({ ignoreFile: paths.ignoreFile }));
   try {
-    indexExternalFast(indexer.db);                          // make sure audit_fts is fresh before we read it
-    // Canonical ledger only (~/.ise) — do NOT walk MOMENTO_SRC_ROOTS/~/src. That walk hits the RAID volume
-    // and under cron (cold cache) it stalls for minutes while holding a write txn; the hot path avoids it
-    // for the same reason. Per-project ledgers are excluded from facts here by design (speed + headless safety).
-    const r = consolidateInto(indexer.db, { ledgerRoots: [process.env.ISE_HOME || join(homedir(), ".ise")] });
+    const r = refreshAndConsolidate(indexer.db);            // same refresh+derive the recall_facts hot path uses
     process.stdout.write(
       `momento: consolidated — ${r.total_current} current facts ` +
         `(${r.tool_reliability} tool-reliability, ${r.ledger_pattern} ledger-pattern; ${r.changed} changed this pass)\n`,
