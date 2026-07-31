@@ -7,7 +7,7 @@ import { MomentoConfig, loadConfig, projectExcluded } from "./config.js";
 import { ClientName, Source, defaultSources } from "./sources.js";
 import { buildTurns, classifyTurn } from "./classifier.js";
 import { detectOutcome } from "./outcome.js";
-import { indexLedgerInto, indexAuditInto } from "./external.js";
+import { indexLedgerInto, indexAuditInto, indexTimelineInto } from "./external.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -74,6 +74,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS ledger_fts USING fts5(
 CREATE VIRTUAL TABLE IF NOT EXISTS audit_fts USING fts5(
   source_path UNINDEXED, backend UNINDEXED, tool UNINDEXED, event UNINDEXED,
   ok UNINDEXED, ms UNINDEXED, ts UNINDEXED, content,
+  tokenize = 'porter unicode61'
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS timeline_fts USING fts5(
+  source_path UNINDEXED, job_id UNINDEXED, state UNINDEXED, ts UNINDEXED, content,
   tokenize = 'porter unicode61'
 );
 -- Consolidated SEMANTIC FACTS derived from the raw episodic tables above (see consolidate.ts). Kept in a
@@ -292,6 +296,7 @@ export class Indexer {
   indexExternal(): void {
     try { indexLedgerInto(this.db); } catch (e) { process.stderr.write(`momento: ledger index skipped: ${(e as Error).message}\n`); }
     try { indexAuditInto(this.db); } catch (e) { process.stderr.write(`momento: audit index skipped: ${(e as Error).message}\n`); }
+    try { indexTimelineInto(this.db); } catch (e) { process.stderr.write(`momento: timeline index skipped: ${(e as Error).message}\n`); }
   }
 
   // Single-source convenience for the original Claude Code watcher.

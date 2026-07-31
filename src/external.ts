@@ -32,6 +32,25 @@ export function auditFiles(env: NodeJS.ProcessEnv = process.env): string[] {
   return out;
 }
 
+// ── bg-job timeline discovery: ~/.claude/jobs/<id>/timeline.jsonl (append-only outcome ledgers) ──
+export function timelineFiles(home: string = homedir()): string[] {
+  const root = join(home, ".claude", "jobs");
+  const out: string[] = [];
+  try {
+    for (const id of readdirSync(root)) {
+      const f = join(root, id, "timeline.jsonl");
+      try {
+        if (statSync(f).isFile()) out.push(f);
+      } catch {
+        /* no timeline.jsonl in this job dir */
+      }
+    }
+  } catch {
+    /* no ~/.claude/jobs — nothing to index */
+  }
+  return out;
+}
+
 function fileMtime(path: string): string | null {
   try {
     return statSync(path).mtime.toISOString();
@@ -72,8 +91,39 @@ function readAuditRows(path: string): Array<Record<string, unknown>> {
   return out;
 }
 
+// Parse a bg-job timeline.jsonl (one {at,state,detail,text} per line). Rows whose detail AND text are
+// both blank carry no searchable headline and are skipped — indexing them would only pollute recall.
+interface TimelineRow {
+  state: string;
+  ts: string;
+  content: string;
+}
+function readTimelineRows(path: string): TimelineRow[] {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const out: TimelineRow[] = [];
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    let r: Record<string, unknown>;
+    try {
+      r = JSON.parse(t) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const content = [str(r.detail), str(r.text)].filter(Boolean).join(" ").trim();
+    if (!content) continue; // blank row — no headline to index
+    out.push({ state: str(r.state), ts: str(r.at) || str(r.ts), content });
+  }
+  return out;
+}
+
 // Generic mtime-gated re-ingest of one JSONL source file into its *_fts table.
-function ingest(db: DatabaseSync, path: string, kind: "ledger" | "audit"): void {
+function ingest(db: DatabaseSync, path: string, kind: "ledger" | "audit" | "timeline"): void {
   const mtime = fileMtime(path);
   if (mtime === null) return;
   const prev = db.prepare("SELECT mtime FROM external_sources WHERE path = ?").get(path) as
@@ -90,7 +140,7 @@ function ingest(db: DatabaseSync, path: string, kind: "ledger" | "audit"): void 
       for (const r of readLedgerRows(path)) {
         ins.run(path, str(r.id), str(r.outcome), str(r.module), str(r.stack), str(r.vuln_class ?? r.class), str(r.ts ?? r.timestamp ?? r.closed_at), ledgerContent(r));
       }
-    } else {
+    } else if (kind === "audit") {
       const ins = db.prepare(
         `INSERT INTO audit_fts(source_path, backend, tool, event, ok, ms, ts, content) VALUES (?,?,?,?,?,?,?,?)`,
       );
@@ -100,6 +150,13 @@ function ingest(db: DatabaseSync, path: string, kind: "ledger" | "audit"): void 
         const content = [backend && tool ? `${backend}.${tool}` : backend || tool, event, ...argKeys].filter(Boolean).join(" ");
         ins.run(path, backend, tool, event, str(r.ok), str(r.ms), str(r.ts), content);
       }
+    } else {
+      // timeline: one row per non-empty {at,state,detail,text} line of a bg-job's timeline.jsonl.
+      const ins = db.prepare(
+        `INSERT INTO timeline_fts(source_path, job_id, state, ts, content) VALUES (?,?,?,?,?)`,
+      );
+      const jobId = basename(dirname(path)); // ~/.claude/jobs/<id>/timeline.jsonl → <id>
+      for (const r of readTimelineRows(path)) ins.run(path, jobId, r.state, r.ts, r.content);
     }
     db.prepare(
       `INSERT INTO external_sources(path, kind, mtime) VALUES (?,?,?) ON CONFLICT(path) DO UPDATE SET kind = excluded.kind, mtime = excluded.mtime`,
@@ -119,6 +176,11 @@ export function indexLedgerInto(db: DatabaseSync, roots: string[] = ledgerRoots(
 }
 export function indexAuditInto(db: DatabaseSync, files: string[] = auditFiles()): void {
   for (const f of files) ingest(db, f, "audit");
+}
+// Background-job outcome ledgers — walks ~/.claude/jobs/*/timeline.jsonl. Per-file mtime-gated; empty
+// rows are dropped (see readTimelineRows). Additive & optional: no jobs dir → no-op.
+export function indexTimelineInto(db: DatabaseSync, files: string[] = timelineFiles()): void {
+  for (const f of files) ingest(db, f, "timeline");
 }
 // FAST refresh — only the canonical fixed paths (ISE_HOME/ledger.jsonl + marshal audit); no ~/src walk,
 // mtime-gated. Cheap enough to call before every external search. Per-project ledgers still refresh on
@@ -162,4 +224,18 @@ export function searchAudit(db: DatabaseSync, q: string, opts: { backend?: strin
   if (opts.since) { sql += " AND ts >= ?"; params.push(opts.since); }
   sql += " ORDER BY ts DESC LIMIT ?"; params.push(opts.limit ?? 20); // log-like: most recent match first
   return db.prepare(sql).all(...params) as unknown as AuditHit[];
+}
+
+export interface TimelineHit {
+  job_id: string; state: string; ts: string; snippet: string; source_path: string; score: number;
+}
+export function searchTimeline(db: DatabaseSync, q: string, opts: { state?: string; since?: string; limit?: number } = {}): TimelineHit[] {
+  const fts = orQuery(q);
+  if (!fts) return [];
+  let sql = `SELECT job_id, state, ts, snippet(timeline_fts, 4, '[', ']', '…', 12) AS snippet, source_path, bm25(timeline_fts) AS score FROM timeline_fts WHERE timeline_fts MATCH ?`;
+  const params: (string | number)[] = [fts];
+  if (opts.state) { sql += " AND state = ?"; params.push(opts.state); }
+  if (opts.since) { sql += " AND ts >= ?"; params.push(opts.since); }
+  sql += " ORDER BY ts DESC LIMIT ?"; params.push(opts.limit ?? 20); // ledger-like: most recent match first
+  return db.prepare(sql).all(...params) as unknown as TimelineHit[];
 }

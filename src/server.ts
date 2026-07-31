@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import { Indexer, defaultSources } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown, findByTopicWithRecency } from "./queries.js";
 import { aggregateLedger } from "./ledger.js";
-import { searchLedger, searchAudit, indexExternalFast } from "./external.js";
+import { searchLedger, searchAudit, searchTimeline, indexTimelineInto, indexExternalFast } from "./external.js";
 import { searchFacts, refreshAndConsolidate } from "./consolidate.js";
 import { ALL_CATEGORIES } from "./classifier.js";
 import { runRebuild, runStatus, runDoctor, runConsolidate, runExplainExclusions, defaultPaths } from "./admin.js";
@@ -288,6 +288,21 @@ const TOOLS = [
     },
   },
   {
+    name: "search_timeline",
+    description:
+      "Keyword search (FTS5/BM25) over background-job outcome ledgers — ~/.claude/jobs/*/timeline.jsonl, the {state, detail} headlines of what each overnight/background job DID or blocked on. Use to recall 'the bg job where X', or filter by state to surface the harness-loss (blocked) signal or shipped work (done). Newest-first. OPTIONAL & additive: returns [] if no jobs exist. Optionally filter by state or since (ISO ts).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords over the job's step headline (keyword-only; rare terms rank best)" },
+        state: { type: "string", description: "Optional: restrict to one state (done | blocked | working)" },
+        since: { type: "string", description: "Optional: only rows at/after this ISO timestamp" },
+        limit: { type: "number", description: "Max hits (default 20)" },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "recall_facts",
     description:
       "Recall CONSOLIDATED SEMANTIC FACTS distilled from history (not raw sessions) — durable claims like tool reliability ('momento.search: 48/50 calls succeeded') and outcome patterns from the ISE ledger ('persona × stack × class: 6/7 positive'). Each carries a confidence, support count (n), and provenance. Use to ask 'what have I learned about X' instead of re-reading transcripts. Facts are re-derived on read from the latest marshal audit + ISE ledger, so they're always current (returns [] only if there's nothing to consolidate yet). Filter by kind (tool_reliability | ledger_pattern) or subject; omit query to list the highest-confidence facts.",
@@ -404,6 +419,13 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         backend: typeof args.backend === "string" ? args.backend : undefined,
         tool: typeof args.tool === "string" ? args.tool : undefined,
         ok: typeof args.ok === "boolean" ? args.ok : undefined,
+        since: typeof args.since === "string" ? args.since : undefined,
+        limit: typeof args.limit === "number" ? args.limit : undefined,
+      });
+    case "search_timeline":
+      indexTimelineInto(indexer.db); // refresh bg-job ledgers (mtime-gated → cheap) before searching
+      return searchTimeline(indexer.db, String(args.query ?? ""), {
+        state: typeof args.state === "string" ? args.state : undefined,
         since: typeof args.since === "string" ? args.since : undefined,
         limit: typeof args.limit === "number" ? args.limit : undefined,
       });

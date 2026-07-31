@@ -13,6 +13,7 @@ import type { SessionRef, ParsedSession, IndexedSessionMeta } from "./parser.js"
 import { iterateSessions, parseSession, readSessionsIndex } from "./parser.js";
 import { iterateCodexSessions, parseCodexSession } from "./codex.js";
 import { iterateGeminiSessions, parseGeminiSession } from "./gemini.js";
+import { loadJobSummaries } from "./jobs.js";
 
 export type ClientName = "claude_code" | "codex" | "gemini" | "halo";
 
@@ -53,7 +54,11 @@ export function defaultSources(home: string = homedir()): Source[] {
           meta = await readSessionsIndex(projectDir);
           cache.set(projectDir, meta);
         }
-        return meta.get(sessionId) ?? {};
+        const base = meta.get(sessionId) ?? {};
+        // Background-job sidecar: if this session is a bg job, its state.json intent/name/result is a
+        // truer headline than the transcript-derived one — overlay firstPrompt/summary/projectPath.
+        const job = loadJobSummaries().get(sessionId);
+        return job ? { ...base, ...job } : base;
       },
     },
     {
