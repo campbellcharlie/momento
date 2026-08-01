@@ -74,6 +74,29 @@ export function consolidateInto(db: DatabaseSync, opts: ConsolidateOpts = {}): C
       }, now) === "changed") changed++;
       toolFacts++;
     }
+    // 1b) NATIVE + MCP TOOL RELIABILITY — from momento's own tool_calls, whose is_error is joined from the
+    //     transcript's tool_result. This is the "made anywhere" signal marshal's MCP-only audit can't see
+    //     (Bash/Edit/Read/… plus MCP tools as Claude invokes them). Keyed `tool:<name>` — no backend prefix,
+    //     so it never collides with the `tool:<backend>.<tool>` facts above. NULL is_error (unknown outcome,
+    //     e.g. codex/gemini) is excluded so it can't dilute the rate.
+    const nrows = db.prepare(
+      `SELECT tool_name AS tool,
+         SUM(CASE WHEN is_error = 0 THEN 1 ELSE 0 END) AS oks,
+         COUNT(*) AS n, MAX(timestamp) AS last_ts
+       FROM tool_calls
+       WHERE is_error IS NOT NULL AND tool_name <> ''
+       GROUP BY tool_name HAVING n >= ?`,
+    ).all(minN) as { tool: string; oks: number; n: number; last_ts: string }[];
+    for (const r of nrows) {
+      const rate = r.n ? r.oks / r.n : 0;
+      if (upsertFact(db, {
+        id: `tool:${r.tool}`, kind: "tool_reliability", subject: r.tool,
+        statement: `${r.tool}: ${r.oks}/${r.n} calls succeeded (${pct(rate)}% reliable)`,
+        confidence: support(r.n), n: r.n,
+        provenance: JSON.stringify({ oks: r.oks, n: r.n, rate: Math.round(rate * 100) / 100, last_ts: r.last_ts, source: "tool_calls" }),
+      }, now) === "changed") changed++;
+      toolFacts++;
+    }
     // 2) OUTCOME PATTERNS — reuse the ledger's numeric aggregation (persona × stack × class). Persists the
     //    "which approaches tend to work" prior as durable, searchable facts.
     const agg = aggregateLedger({ minN }, opts.ledgerRoots ?? ledgerRoots());

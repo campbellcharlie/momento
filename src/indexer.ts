@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   session_id TEXT,
   tool_name TEXT,
   input_json TEXT,
-  timestamp TEXT
+  timestamp TEXT,
+  is_error INTEGER  -- 1 error / 0 ok / NULL unknown (source carries no result status)
 );
 CREATE TABLE IF NOT EXISTS file_touches (
   session_id TEXT,
@@ -112,7 +113,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
 // columns/tables. Migrations are idempotent — they read PRAGMA user_version and
 // ALTER only if needed. Existing rows get sane defaults so the DB is queryable
 // before the first reindex.
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 function migrate(db: DatabaseSync): void {
   const cur = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
@@ -169,6 +170,15 @@ function migrate(db: DatabaseSync): void {
   if (cur < 7) {
     // v7: add facts + facts_fts for memory consolidation (consolidate.ts). SCHEMA above already CREATE IF
     // NOT EXISTS'd them; explicit version marker. Stay empty until `momento --consolidate` runs — additive.
+  }
+  if (cur < 8) {
+    // v8: add tool_calls.is_error (1 error / 0 ok / NULL unknown), joined from tool_result.is_error.
+    // Probe before ALTER so the migration is idempotent; existing rows stay NULL until reindexed, so an
+    // un-reindexed call reads as "unknown outcome", never as a spurious success.
+    const cols = db.prepare("PRAGMA table_info(tool_calls)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "is_error")) {
+      db.exec("ALTER TABLE tool_calls ADD COLUMN is_error INTEGER");
+    }
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
@@ -235,7 +245,7 @@ export class Indexer {
       `INSERT INTO messages_fts(session_id, role, content) VALUES (?, ?, ?)`,
     );
     this.stmtInsTool = this.db.prepare(
-      `INSERT INTO tool_calls(session_id, tool_name, input_json, timestamp) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO tool_calls(session_id, tool_name, input_json, timestamp, is_error) VALUES (?, ?, ?, ?, ?)`,
     );
     this.stmtInsTouch = this.db.prepare(
       `INSERT INTO file_touches(session_id, file_path, operation, timestamp, touch_source) VALUES (?, ?, ?, ?, ?)`,
@@ -416,7 +426,14 @@ export class Indexer {
       });
       this.stmtInsSessFts.run(id, summary ?? "", firstPrompt ?? "");
       for (const msg of parsed.messages) this.stmtInsFts.run(id, msg.role, msg.text);
-      for (const tc of parsed.toolCalls) this.stmtInsTool.run(id, tc.toolName, tc.inputJson, tc.timestamp);
+      for (const tc of parsed.toolCalls)
+        this.stmtInsTool.run(
+          id,
+          tc.toolName,
+          tc.inputJson,
+          tc.timestamp,
+          tc.isError === undefined ? null : tc.isError ? 1 : 0,
+        );
       for (const ft of parsed.filesTouched) {
         this.stmtInsTouch.run(id, ft.filePath, ft.operation, ft.timestamp, ft.source);
       }

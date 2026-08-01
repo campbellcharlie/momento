@@ -7,6 +7,11 @@ const ContentBlockZ = z
     name: z.string().optional(),
     input: z.unknown().optional(),
     thinking: z.string().optional(),
+    // tool_use blocks carry `id`; the matching tool_result (in a later user message)
+    // references it via `tool_use_id` and reports pass/fail through `is_error`.
+    id: z.string().optional(),
+    tool_use_id: z.string().optional(),
+    is_error: z.boolean().optional(),
   })
   .passthrough();
 
@@ -65,6 +70,10 @@ export interface ToolCall {
   toolName: string;
   inputJson: string;
   timestamp: string;
+  // Pass/fail from the tool_result joined by tool_use id: false = ok, true = error.
+  // Left undefined when the source carries no result status (codex/gemini) — stored NULL,
+  // NEVER 0, so an unknown outcome can't masquerade as success.
+  isError?: boolean;
 }
 
 export interface FileTouch {
@@ -102,12 +111,28 @@ export function extractText(
 
 export function extractToolUses(
   content: string | ContentBlock[],
-): { name: string; input: unknown }[] {
+): { id?: string; name: string; input: unknown }[] {
   if (typeof content === "string") return [];
-  const out: { name: string; input: unknown }[] = [];
+  const out: { id?: string; name: string; input: unknown }[] = [];
   for (const block of content) {
     if (block.type === "tool_use" && typeof block.name === "string") {
-      out.push({ name: block.name, input: block.input ?? null });
+      out.push({ id: block.id, name: block.name, input: block.input ?? null });
+    }
+  }
+  return out;
+}
+
+// tool_result blocks live in USER messages; each references the tool_use it answers
+// (tool_use_id) and reports pass/fail via is_error. The parser joins these back to the
+// tool_use recorded on the preceding assistant message to stamp per-call reliability.
+export function extractToolResults(
+  content: string | ContentBlock[],
+): { toolUseId: string; isError: boolean }[] {
+  if (typeof content === "string") return [];
+  const out: { toolUseId: string; isError: boolean }[] = [];
+  for (const block of content) {
+    if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
+      out.push({ toolUseId: block.tool_use_id, isError: block.is_error === true });
     }
   }
   return out;

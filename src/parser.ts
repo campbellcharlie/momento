@@ -10,6 +10,7 @@ import {
   FileTouch,
   extractText,
   extractToolUses,
+  extractToolResults,
   UserMessageZ,
   AssistantMessageZ,
 } from "./types.js";
@@ -113,6 +114,9 @@ export async function parseSession(
   const cfg = config ?? loadConfig();
   const messages: ParsedMessage[] = [];
   const toolCalls: ToolCall[] = [];
+  // tool_use id → its ToolCall, so a tool_result in a later user message can stamp is_error
+  // onto the call the assistant already recorded (they live in different transcript lines).
+  const toolById = new Map<string, ToolCall>();
   const filesTouched: FileTouch[] = [];
   let sessionId = "";
   // Capture the first cwd we see. Claude Code stores sessions under
@@ -152,6 +156,13 @@ export async function parseSession(
       if (text) {
         messages.push({ uuid: u.data.uuid, role: "user", text, timestamp: u.data.timestamp });
       }
+      // Stamp pass/fail onto the tool_use these results answer. Direct assignment (not only
+      // on error) so a known-successful call stores is_error = 0, not NULL — only calls that
+      // never received a result stay unknown.
+      for (const tr of extractToolResults(u.data.message.content)) {
+        const call = toolById.get(tr.toolUseId);
+        if (call) call.isError = tr.isError;
+      }
     } else if (entry.type === "assistant") {
       const a = AssistantMessageZ.safeParse(json);
       if (!a.success) continue;
@@ -160,11 +171,13 @@ export async function parseSession(
         messages.push({ uuid: a.data.uuid, role: "assistant", text, timestamp: a.data.timestamp });
       }
       for (const tu of extractToolUses(a.data.message.content)) {
-        toolCalls.push({
+        const call: ToolCall = {
           toolName: tu.name,
           inputJson: JSON.stringify(tu.input ?? null),
           timestamp: a.data.timestamp,
-        });
+        };
+        toolCalls.push(call);
+        if (tu.id) toolById.set(tu.id, call);
         const op = FILE_TOOL_OP[tu.name];
         if (op) {
           const fp = (tu.input as { file_path?: string } | null)?.file_path;
