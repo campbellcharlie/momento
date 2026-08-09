@@ -198,6 +198,8 @@ export function indexExternalFast(db: DatabaseSync, env: NodeJS.ProcessEnv = pro
 // ── search entry points (called from the MCP tools) ─────────────────────────────────────────────
 export interface LedgerHit {
   entry_id: string; outcome: string; module: string; stack: string; klass: string; ts: string; snippet: string; source_path: string; score: number;
+  verified?: boolean;         // write-time probe status from the live-resolved row (undefined = not stamped: pre-gate or self-falsifying bypass)
+  downgrade_reason?: string;  // why a positive closure was downgraded to conjecture (undefined if not downgraded)
 }
 export function searchLedger(db: DatabaseSync, q: string, opts: { outcome?: string; klass?: string; limit?: number } = {}): LedgerHit[] {
   const fts = orQuery(q);
@@ -207,7 +209,30 @@ export function searchLedger(db: DatabaseSync, q: string, opts: { outcome?: stri
   if (opts.outcome) { sql += " AND outcome = ?"; params.push(opts.outcome); }
   if (opts.klass) { sql += " AND klass = ?"; params.push(opts.klass); }
   sql += " ORDER BY score ASC LIMIT ?"; params.push(opts.limit ?? 20);
-  return db.prepare(sql).all(...params) as unknown as LedgerHit[];
+  const hits = db.prepare(sql).all(...params) as unknown as LedgerHit[];
+  return annotateTrust(hits);
+}
+
+// Attach write-time trust status (verified / downgrade_reason) by resolving each hit back to its
+// CURRENT ledger row. Keeps recall honest: an unverified-but-shipped row or a downgraded conjecture
+// no longer reads identically to a probe-verified closure. Live-resolved from the source file, so it
+// reflects the latest write (incl. gate downgrades) with no FTS schema change or reindex. Cost: one
+// small file read per distinct source_path in the result set.
+function annotateTrust(hits: LedgerHit[]): LedgerHit[] {
+  if (!hits.length) return hits;
+  const byPath = new Map<string, Map<string, LedgerRow>>();
+  const rowsFor = (p: string): Map<string, LedgerRow> => {
+    let m = byPath.get(p);
+    if (!m) { m = new Map(readLedgerRows(p).map((r) => [String(r.id), r])); byPath.set(p, m); }
+    return m;
+  };
+  for (const h of hits) {
+    const row = rowsFor(h.source_path).get(h.entry_id);
+    if (!row) continue;
+    if (typeof row.verified === "boolean") h.verified = row.verified;
+    if (typeof row.downgrade_reason === "string") h.downgrade_reason = row.downgrade_reason;
+  }
+  return hits;
 }
 
 export interface AuditHit {
