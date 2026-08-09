@@ -112,6 +112,17 @@ if (sessionCount === 0) {
 }
 indexer.watchSources(SOURCES);
 
+// Auto-start the read-only web UI alongside the MCP server, so the GUI is always available
+// without a separate `--web` invocation. Best-effort + isolated: if 8765 is already bound
+// (another momento instance already owns it) or binding fails for any reason, the GUI is
+// silently skipped and the MCP server keeps running — ONLY the GUI fails. Opt out with
+// MOMENTO_NO_WEB=1. stderr only: stdout is the MCP JSON-RPC channel and must not be written here.
+if (process.env.MOMENTO_NO_WEB !== "1") {
+  startWebServer({ dbPath: DB_PATH, host: "127.0.0.1", port: 8765 })
+    .then((h) => process.stderr.write(`momento web: http://${h.host}:${h.port} (read-only)\n`))
+    .catch(() => { /* port in use or bind failed → skip GUI silently, MCP unaffected */ });
+}
+
 const TOOLS = [
   {
     name: "search",
