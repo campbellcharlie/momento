@@ -192,6 +192,47 @@ test("momento-inject applies score floor on OR-fallback matches", async () => {
   }
 });
 
+test("momento-inject in a non-repo cwd still injects a strong multi-term match", async () => {
+  // cwd = home (not under src root, no .git) → currentRepo null → no_repo_context.
+  // A multi-term match must still surface (the fix must not over-suppress).
+  const fx = await buildCliFixture();
+  try {
+    const result = runInject(
+      fx.home,
+      fx.home,
+      "please fix the rate-limit retry logic in the api client",
+    );
+    assert.equal(result.status, 0);
+    const last = readLastDebugEntry(fx.home);
+    assert.equal(last.selectionReason, "no_repo_context");
+    assert.equal(last.currentRepo, null);
+    assert.equal(last.reason, "inject");
+    assert.match(result.stdout, /sess-a/);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("momento-inject in a non-repo cwd gates hits below the matched-term floor", async () => {
+  // Same no-repo prompt, but raise the term floor so even the strong match is
+  // filtered out → the raw-pool fallback injects nothing (the leak is closed).
+  const fx = await buildCliFixture();
+  try {
+    const result = runInject(
+      fx.home,
+      fx.home,
+      "please fix the rate-limit retry logic in the api client",
+      { MOMENTO_INJECT_NO_REPO_MIN_TERMS: "99" },
+    );
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, "");
+    const last = readLastDebugEntry(fx.home);
+    assert.equal(last.reason, "no_repo_weak_match");
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test("momento-inject does not inject cross-repo history for a generic prompt in the current repo context", async () => {
   const fx = await buildCliFixture();
   try {
