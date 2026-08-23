@@ -2,8 +2,8 @@
 // changes, queries the most recently modified session and publishes a
 // `session_indexed` event onto the bus.
 //
-// Deliberately a stat-based polling loop instead of chokidar: the indexer
-// itself already uses chokidar; the web watcher is a passive read-only
+// Deliberately a stat-based polling loop instead of a filesystem watcher: the
+// indexer already owns the watches; the web watcher is a passive read-only
 // observer of the DB file and shouldn't add a second filesystem watcher.
 
 import { DatabaseSync } from "node:sqlite";

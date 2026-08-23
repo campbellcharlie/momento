@@ -3,7 +3,7 @@
 // file into a normalized `ParsedSession`.
 //
 // Adding a new client means: write a parser module, add an entry here, and
-// teach the chokidar `ignored` predicate (in indexer.watchSources) about its
+// teach the extension filter (in indexer.watchSources) about its
 // file extension.
 
 import { homedir } from "node:os";
@@ -28,7 +28,7 @@ export interface ParsedSessionWithMeta extends ParsedSession {
 export interface Source {
   client: ClientName;
   root: string;
-  fileExt: string; // for chokidar ignored predicate
+  fileExt: string; // watcher extension filter + session-id derivation
   iterate(root: string): AsyncGenerator<SessionRef>;
   parse(jsonlPath: string, config?: MomentoConfig): Promise<ParsedSessionWithMeta>;
   // Per-client metadata resolver. Claude reads sessions-index.json sidecars;

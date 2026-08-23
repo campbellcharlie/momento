@@ -11,7 +11,20 @@ import {
 } from "./queries.js";
 
 const DB_PATH = join(homedir(), ".momento", "index.db");
-const TIMEOUT_MS = 200;
+// Guards the stdin wait only: if the harness never sends a payload, exit
+// quietly instead of hanging. It cannot guard the database phase — node:sqlite
+// is synchronous and Node exposes no statement interrupt, so a timer callback
+// cannot run while a query is executing. That phase is bounded by BUDGET_MS
+// checks between statements instead.
+const STDIN_TIMEOUT_MS = 200;
+// Total wall-clock the hook allows itself before it stops doing optional
+// per-hit refinement and emits what it already has. Claude Code kills a
+// UserPromptSubmit hook at 5s and DISCARDS its output, so an overrun costs the
+// whole injection — finishing early with a coarser ranking is strictly better.
+const parsedBudget = Number(process.env.MOMENTO_INJECT_BUDGET_MS ?? "1500");
+const BUDGET_MS = Number.isFinite(parsedBudget) ? Math.max(0, parsedBudget) : 1500;
+const startedAt = Date.now();
+const outOfBudget = (): boolean => Date.now() - startedAt > BUDGET_MS;
 const DEBUG_LOG_PATH = process.env.MOMENTO_INJECT_DEBUG_LOG ?? join(homedir(), ".momento", "inject.log");
 const DEBUG_ENABLED = /^(1|true|yes)$/i.test(process.env.MOMENTO_INJECT_DEBUG ?? "");
 const parsedMaxSelectedHits = Number(process.env.MOMENTO_INJECT_MAX_HITS ?? "3");
@@ -442,11 +455,12 @@ async function main(): Promise<void> {
   const tokens = meaningfulTokens(prompt);
 
   const db = new DatabaseSync(DB_PATH, { readOnly: true });
-  // Wait out a writer's checkpoint rather than returning empty. The indexer
-  // holds the write lock (busy_timeout 5000) while indexing large transcripts;
-  // at 50ms this hook silently injected nothing under contention, which reads
-  // as "no relevant sessions" instead of "could not look".
-  db.exec("PRAGMA busy_timeout = 500");
+  // Fail open and fast. WAL readers are not blocked by the indexer's writes,
+  // and a 18k-iteration probe against this DB returned zero SQLITE_BUSY, so a
+  // long busy wait buys nothing measurable while putting the hook's whole
+  // output at risk: overrunning the harness timeout discards the injection,
+  // whereas returning early merely surfaces fewer sessions.
+  db.exec("PRAGMA busy_timeout = 50");
   try {
     const queryStarted = Date.now();
     const { hits: rawHits, matchType } = findByTopicRanked(db, prompt, 10);
@@ -465,7 +479,10 @@ async function main(): Promise<void> {
     const promptLooksCodeWork = CODE_WORK_HINTS.test(prompt);
     const reranked = selected.hits.map((h) => {
       const baseScore = typeof h.score === "number" ? h.score : 0;
-      const breakdown = sessionCategoryBreakdown(db, h.id);
+      // One query per hit. Past the budget, fall back to raw BM25 order instead
+      // of spending the remaining time refining it; adjustScore already treats
+      // an empty breakdown as "no category signal".
+      const breakdown = outOfBudget() ? [] : sessionCategoryBreakdown(db, h.id);
       return {
         hit: h,
         adjusted: adjustScore(baseScore, h.modified, breakdown, promptLooksCodeWork),
@@ -526,7 +543,7 @@ async function main(): Promise<void> {
       const rawSummary =
         (h.summary && h.summary.trim()) ||
         (h.firstPrompt && h.firstPrompt.trim()) ||
-        deriveSnippet(db, h.id) ||
+        (outOfBudget() ? null : deriveSnippet(db, h.id)) ||
         "(no summary)";
       const summary = rawSummary.replace(/\s+/g, " ").slice(0, 120);
       // Outcome marker tells the agent whether this precedent actually worked,
@@ -545,9 +562,9 @@ async function main(): Promise<void> {
 }
 
 const timer = setTimeout(() => {
-  debugLog({ event: "timeout", timeoutMs: TIMEOUT_MS });
+  debugLog({ event: "timeout", timeoutMs: STDIN_TIMEOUT_MS });
   process.exit(0);
-}, TIMEOUT_MS);
+}, STDIN_TIMEOUT_MS);
 timer.unref();
 
 main()

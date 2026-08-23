@@ -3,12 +3,23 @@ import { realpathSync } from "node:fs";
 import { aliasTerms } from "./synonyms.js";
 import { fuzzyPrefixTerms } from "./fuzzy.js";
 
+// realpath() is a syscall per call, and attachTopEditedPaths runs it once per
+// file_touches ROW — a heavy hit set repeats the same few hundred paths several
+// times over. Memoizing collapses that to one syscall per distinct path, which
+// matters on a cold metadata cache where each resolve costs about a millisecond.
+const realpathCache = new Map<string, string>();
+
 function canonicalize(p: string): string {
+  const cached = realpathCache.get(p);
+  if (cached !== undefined) return cached;
+  let resolved: string;
   try {
-    return realpathSync(p);
+    resolved = realpathSync(p);
   } catch {
-    return p;
+    resolved = p;
   }
+  realpathCache.set(p, resolved);
+  return resolved;
 }
 
 // Per-hit provenance: WHY this result surfaced. Additive, in-memory only — no
@@ -382,6 +393,11 @@ export interface RankedTopicResult {
   matchType: MatchType;
 }
 
+type RankedRow = SessionRow & {
+  src?: string;
+  snip?: string | null;
+};
+
 // Two-pass: stricter AND over rare tokens first, OR fallback only if AND
 // returns nothing. Callers can trust an "and" match without re-checking raw
 // BM25 scores (which are degenerate on small corpora). AND-first is the
@@ -400,18 +416,34 @@ export function findByTopicRanked(
   // provenance can report which field matched without a second query. We pick
   // the min-score arm per session via ROW_NUMBER instead of MIN(s) so the src
   // label travels with the score.
+  // Each FTS arm is capped before the dedupe/rank stage so cost tracks the pool
+  // size rather than the size of the match set. A broad OR query matches a large
+  // fraction of the corpus, and ranking all of it only to keep `limit` rows made
+  // the prompt hook exceed its latency budget. The pool stays well above `limit`
+  // because rows collapse to one per session at the `ranked` stage.
+  //
   // `snip` carries the highlighted message body of the winning message arm so
   // provenance can extract the literal matched terms (the session arm has no
   // body, so its snip is NULL and matchedTerms come from summary/first_prompt).
+  // It stays inside its arm rather than being deferred to the winning rows: an
+  // FTS5 auxiliary function is only meaningful in the query that owns the
+  // MATCH, and re-looking-up a single rowid afterwards both returns the wrong
+  // row and collapses to a full scan. Capping the arm is what makes computing
+  // it here affordable.
+  const pool = Math.max(400, limit * 40);
   const sql = `
-    WITH combined AS (
+    WITH m AS (
       SELECT session_id AS sid, bm25(messages_fts) AS s, 'message' AS src,
              snippet(messages_fts, 2, '[', ']', '...', 12) AS snip
       FROM messages_fts WHERE messages_fts MATCH ?
-      UNION ALL
+      ORDER BY s ASC LIMIT ${pool}
+    ),
+    x AS (
       SELECT session_id AS sid, bm25(sessions_fts) * 2 AS s, 'session' AS src, NULL AS snip
       FROM sessions_fts WHERE sessions_fts MATCH ?
+      ORDER BY s ASC LIMIT ${pool}
     ),
+    combined AS (SELECT * FROM m UNION ALL SELECT * FROM x),
     ranked AS (
       SELECT sid, s, src, snip,
              ROW_NUMBER() OVER (PARTITION BY sid ORDER BY s ASC) AS rn
@@ -426,11 +458,8 @@ export function findByTopicRanked(
     ORDER BY r.s ASC
     LIMIT ?
   `;
-  const run = (fts: string): (SessionRow & { src?: string; snip?: string | null })[] =>
-    db.prepare(sql).all(fts, fts, limit) as unknown as (SessionRow & {
-      src?: string;
-      snip?: string | null;
-    })[];
+  const run = (fts: string): RankedRow[] =>
+    db.prepare(sql).all(fts, fts, limit) as unknown as RankedRow[];
   const { andQ, orQ } = buildFtsQueries(tokens, description);
   let hits = andQ ? run(andQ) : [];
   let matchType: MatchType = hits.length > 0 ? "and" : "none";

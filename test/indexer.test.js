@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Indexer } from "../dist/indexer.js";
+import { Indexer, defaultSources } from "../dist/indexer.js";
 import { loadConfig } from "../dist/config.js";
 import { search, findByTopic, findByTopicWithRecency, findSimilar, getRecent, filesTouched } from "../dist/queries.js";
 
@@ -156,5 +156,79 @@ test("DB file is created and contains expected tables", async () => {
     assert.ok(readFileSync(fx.dbPath).length > 0);
   } finally {
     fx.cleanup();
+  }
+});
+
+// watchSources() has no other coverage, and the mechanism underneath it was
+// swapped from chokidar to native recursive fs.watch — these pin the contract
+// it has to keep: new files get indexed, deleted files get dropped, and the
+// whole tree costs a bounded number of descriptors rather than one per file.
+async function until(predicate, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
+test("watchSources indexes a session created after the watch starts", async () => {
+  const work = mkdtempSync(join(tmpdir(), "momento-watch-"));
+  const projects = join(work, ".claude", "projects");
+  const projA = join(projects, "-Users-me-src-repo-a");
+  mkdirSync(projA, { recursive: true });
+  const indexer = new Indexer(join(work, "index.db"), loadConfig({ env: {}, ignoreFile: "/nonexistent" }));
+  const source = defaultSources(work).find((s) => s.client === "claude_code");
+  try {
+    indexer.watchSources([source]);
+    const target = join(projA, "sess-basic.jsonl");
+    copyFileSync(join(FIX, "basic-session.jsonl"), target);
+    const indexed = await until(
+      () => getRecent(indexer.db, 50).some((s) => s.id === "sess-basic"),
+    );
+    assert.ok(indexed, "watcher never indexed the new session");
+
+    rmSync(target);
+    const removed = await until(
+      () => !getRecent(indexer.db, 50).some((s) => s.id === "sess-basic"),
+    );
+    assert.ok(removed, "watcher never removed the deleted session");
+  } finally {
+    indexer.close();
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("watchSources ignores files outside the source extension", async () => {
+  const work = mkdtempSync(join(tmpdir(), "momento-watch-ext-"));
+  const projA = join(work, ".claude", "projects", "-Users-me-src-repo-a");
+  mkdirSync(projA, { recursive: true });
+  const indexer = new Indexer(join(work, "index.db"), loadConfig({ env: {}, ignoreFile: "/nonexistent" }));
+  const source = defaultSources(work).find((s) => s.client === "claude_code");
+  try {
+    indexer.watchSources([source]);
+    writeFileSync(join(projA, "notes.md"), "not a transcript");
+    writeFileSync(join(projA, "sess-basic.jsonl"), readFileSync(join(FIX, "basic-session.jsonl")));
+    assert.ok(
+      await until(() => getRecent(indexer.db, 50).some((s) => s.id === "sess-basic")),
+      "the .jsonl sibling should still have been indexed",
+    );
+    const ids = getRecent(indexer.db, 50).map((s) => s.id);
+    assert.deepEqual(ids, ["sess-basic"], "a non-transcript file produced a session row");
+  } finally {
+    indexer.close();
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("watchSources tolerates a source root that does not exist yet", async () => {
+  const work = mkdtempSync(join(tmpdir(), "momento-watch-missing-"));
+  const indexer = new Indexer(join(work, "index.db"), loadConfig({ env: {}, ignoreFile: "/nonexistent" }));
+  const source = defaultSources(join(work, "absent")).find((s) => s.client === "claude_code");
+  try {
+    assert.doesNotThrow(() => indexer.watchSources([source]));
+  } finally {
+    indexer.close();
+    rmSync(work, { recursive: true, force: true });
   }
 });
