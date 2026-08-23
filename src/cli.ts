@@ -442,7 +442,11 @@ async function main(): Promise<void> {
   const tokens = meaningfulTokens(prompt);
 
   const db = new DatabaseSync(DB_PATH, { readOnly: true });
-  db.exec("PRAGMA busy_timeout = 50");
+  // Wait out a writer's checkpoint rather than returning empty. The indexer
+  // holds the write lock (busy_timeout 5000) while indexing large transcripts;
+  // at 50ms this hook silently injected nothing under contention, which reads
+  // as "no relevant sessions" instead of "could not look".
+  db.exec("PRAGMA busy_timeout = 500");
   try {
     const queryStarted = Date.now();
     const { hits: rawHits, matchType } = findByTopicRanked(db, prompt, 10);
