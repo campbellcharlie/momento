@@ -1,7 +1,7 @@
 import { DatabaseSync, StatementSync } from "node:sqlite";
-import chokidar, { FSWatcher } from "chokidar";
+import { watch, existsSync, type FSWatcher } from "node:fs";
 import { stat } from "node:fs/promises";
-import { dirname, basename, extname } from "node:path";
+import { dirname, basename, extname, join } from "node:path";
 import { cleanFirstPrompt, IndexedSessionMeta } from "./parser.js";
 import { MomentoConfig, loadConfig, projectExcluded } from "./config.js";
 import { ClientName, Source, defaultSources } from "./sources.js";
@@ -192,7 +192,7 @@ export interface IndexProgress {
 export class Indexer {
   readonly db: DatabaseSync;
   readonly config: MomentoConfig;
-  private watcher?: FSWatcher;
+  private watchers: FSWatcher[] = [];
   private debounceTimers = new Map<string, NodeJS.Timeout>();
   private indexCache = new Map<string, Map<string, IndexedSessionMeta>>();
 
@@ -316,32 +316,30 @@ export class Indexer {
     this.watchSources([{ ...claude, root: rootDir }]);
   }
 
-  // Multi-client watcher. Each source contributes one chokidar tree; file
+  // Multi-client watcher. One recursive directory watch per source root; file
   // events route to the right parser via the `path → source` map.
+  //
+  // Native fs.watch rather than chokidar: chokidar v4 opens an fs.watch handle
+  // per discovered FILE, which on this corpus meant thousands of descriptors
+  // held open for the lifetime of the server. macOS backs a recursive directory
+  // watch with FSEvents, so an entire tree costs one handle instead.
   watchSources(sources: Source[]): void {
-    if (this.watcher) return;
+    if (this.watchers.length > 0) return;
     const sourceByPath = (p: string): Source | null => {
       for (const s of sources) if (p.startsWith(s.root)) return s;
       return null;
     };
-    const roots = sources.map((s) => s.root);
     const allowedExts = new Set(sources.map((s) => s.fileExt));
-    this.watcher = chokidar.watch(roots, {
-      ignoreInitial: true,
-      ignored: (p, stats) => {
-        if (!stats) return false;
-        if (stats.isDirectory()) return false;
-        return !allowedExts.has(extname(p));
-      },
-    });
-    const schedule = (path: string, kind: "upsert" | "remove") => {
+    const schedule = (path: string) => {
       const prev = this.debounceTimers.get(path);
       if (prev) clearTimeout(prev);
       const t = setTimeout(() => {
         this.debounceTimers.delete(path);
         const source = sourceByPath(path);
         if (!source) return;
-        if (kind === "remove") {
+        // fs.watch reports "rename" for both creation and deletion, so the kind
+        // of change is decided here by whether the file is still on disk.
+        if (!existsSync(path)) {
           const id = basename(path, source.fileExt);
           this.db.exec("BEGIN");
           try {
@@ -368,9 +366,28 @@ export class Indexer {
       }, 500);
       this.debounceTimers.set(path, t);
     };
-    this.watcher.on("add", (p) => schedule(p, "upsert"));
-    this.watcher.on("change", (p) => schedule(p, "upsert"));
-    this.watcher.on("unlink", (p) => schedule(p, "remove"));
+    for (const source of sources) {
+      try {
+        const watcher = watch(source.root, { recursive: true }, (_event, filename) => {
+          // A null filename means the platform dropped the event detail (buffer
+          // overflow); there is no path to act on, so skip rather than rescan.
+          if (!filename) return;
+          const path = join(source.root, filename.toString());
+          if (!allowedExts.has(extname(path))) return;
+          schedule(path);
+        });
+        watcher.on("error", (err: Error) =>
+          process.stderr.write(`momento: watch error on ${source.root}: ${err.message}\n`),
+        );
+        this.watchers.push(watcher);
+      } catch (err) {
+        // A source root that does not exist yet is not fatal: the remaining
+        // sources still index, and a later rebuild picks the tree up.
+        process.stderr.write(
+          `momento: not watching ${source.root}: ${(err as Error).message}\n`,
+        );
+      }
+    }
   }
 
   // Per-session indexer. Dispatches to the source's parser, merges in metadata
@@ -458,7 +475,8 @@ export class Indexer {
   close(): void {
     for (const t of this.debounceTimers.values()) clearTimeout(t);
     this.debounceTimers.clear();
-    this.watcher?.close().catch(() => {});
+    for (const w of this.watchers) w.close();
+    this.watchers = [];
     this.db.close();
   }
 }
