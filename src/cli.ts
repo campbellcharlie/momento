@@ -22,6 +22,15 @@ const parsedMinScore = Number(process.env.MOMENTO_INJECT_MIN_SCORE ?? "-1");
 const MIN_SCORE = Number.isFinite(parsedMinScore) ? parsedMinScore : -1;
 const parsedMinTokens = Number(process.env.MOMENTO_INJECT_MIN_TOKENS ?? "4");
 const MIN_TOKENS = Number.isFinite(parsedMinTokens) ? Math.max(1, parsedMinTokens) : 4;
+// When there is NO current-repo anchor (cwd isn't in a repo — e.g. a background
+// job or a home-dir session), the same-repo filter can't run, so injection
+// otherwise falls back to the raw BM25 pool and a single incidental shared token
+// surfaces off-topic sessions. In that case require a hit to match at least this
+// many distinct query terms before it's eligible to inject.
+const parsedNoRepoMinTerms = Number(process.env.MOMENTO_INJECT_NO_REPO_MIN_TERMS ?? "2");
+const NO_REPO_MIN_MATCHED_TERMS = Number.isFinite(parsedNoRepoMinTerms)
+  ? Math.max(1, Math.trunc(parsedNoRepoMinTerms))
+  : 2;
 // Recency decay: sessions older than this many days get a soft score penalty
 // at hit-selection time. Tiny vs BM25 magnitudes (~5-10) so it only matters
 // when two hits are otherwise close — exactly when recency should break ties.
@@ -460,7 +469,14 @@ async function main(): Promise<void> {
       };
     });
     reranked.sort((a, b) => a.adjusted - b.adjusted);
-    const selectedHits = reranked.slice(0, MAX_SELECTED_HITS).map((r) => r.hit);
+    let selectedHits = reranked.slice(0, MAX_SELECTED_HITS).map((r) => r.hit);
+    // No repo anchor → drop hits that matched only a single incidental term, so
+    // the raw-pool fallback can't inject off-topic sessions (see constant above).
+    if (selected.selectionReason === "no_repo_context") {
+      selectedHits = selectedHits.filter(
+        (h) => (h.why?.matchedTerms?.length ?? 0) >= NO_REPO_MIN_MATCHED_TERMS,
+      );
+    }
     const decision = decideInjection(selected.hits, tokens, matchType);
     debugLog({
       event: "decision",
@@ -493,6 +509,12 @@ async function main(): Promise<void> {
       })),
     });
     if (!decision.inject) return;
+    // The no-repo term filter above can empty the set — skip rather than emit a
+    // header with nothing under it.
+    if (selectedHits.length === 0) {
+      debugLog({ event: "skip", reason: "no_repo_weak_match", selectionReason: selected.selectionReason, cwd, currentRepo: selected.currentRepo });
+      return;
+    }
     const lines: string[] = ["<!-- momento: relevant past sessions -->"];
     for (const h of selectedHits) {
       const name = displayNameForHit(h);
