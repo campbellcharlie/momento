@@ -5,3 +5,6 @@ dist/
 
 # dev-framework local project state (not part of momento)
 .devfw/
+
+# Claude Code local worktrees / scratch (not part of momento)
+.claude/
