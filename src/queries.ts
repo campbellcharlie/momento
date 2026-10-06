@@ -26,8 +26,11 @@ function canonicalize(p: string): string {
 // DB schema change. `whyText` is the one-line human citation the model reads
 // without parsing the struct.
 export interface WhyMatched {
-  matchType: "and" | "or"; // AND = every rare term present; OR = fallback
+  matchType: "and" | "or"; // query lane; the AND lane also includes OR expansions
   matchedTerms: string[]; // literal query tokens found in this hit
+  matchedAliases?: string[]; // observed synonym phrases, without FTS quoting
+  matchedPrefixes?: string[]; // observed fuzzy prefixes
+  evidenceScope: "returned-text"; // snippets may omit matches; never infer absent terms
   matchField: "summary" | "first_prompt" | "message"; // where the match landed
   projectMatch: boolean; // a query term appears in the project path
   score: number; // raw bm25 / RRF score already computed for ranking
@@ -234,7 +237,12 @@ function buildFtsQueries(tokens: string[], rawQuery: string): { andQ: string; or
 // to [A-Za-z0-9_] by ftsTokens, so \b is safe.
 function textHasTerm(text: string | null | undefined, term: string): boolean {
   if (!text) return false;
-  return new RegExp(`\\b${term}\\b`, "i").test(text);
+  const prefix = term.endsWith("*");
+  const literal = (prefix ? term.slice(0, -1) : term).replace(/^"|"$/g, "").replace(/""/g, '"');
+  const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  // FTS snippet() adds brackets around matched tokens, including phrase words.
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}${prefix ? "" : "(?![\\p{L}\\p{N}_])"}`, "iu")
+    .test(text.replace(/[\[\]]/g, ""));
 }
 
 function termsIn(texts: (string | null | undefined)[], terms: string[]): string[] {
@@ -258,28 +266,24 @@ function explainHit(opts: {
   srcHint?: "message" | "session";
 }): { why: WhyMatched; whyText: string } {
   const { rare, aliases, fuzzy } = opts.terms;
-  const texts = [opts.snippet, opts.summary, opts.firstPrompt];
-  let matchedTerms = termsIn(texts, rare);
+  const texts = opts.srcHint === "message" ? [opts.snippet]
+    : opts.srcHint === "session" ? [opts.summary, opts.firstPrompt]
+    : [opts.snippet, opts.summary, opts.firstPrompt];
+  const matchedTerms = termsIn(texts, rare);
+  const matchedAliases = termsIn(texts, aliases).map((t) => t.replace(/^"|"$/g, "").replace(/""/g, '"'));
+  const matchedPrefixes = termsIn(texts, fuzzy);
   let via: "alias" | "fuzzy" | undefined;
   // If no literal token is visible in the returned text, the hit likely came
   // via an alias/fuzzy expansion — surface that instead of an empty list.
   if (matchedTerms.length === 0) {
-    const aliasHits = termsIn(texts, aliases);
-    const fuzzyHits = termsIn(texts, fuzzy);
-    if (aliasHits.length > 0) {
-      matchedTerms = aliasHits;
+    if (matchedAliases.length > 0) {
       via = "alias";
-    } else if (fuzzyHits.length > 0) {
-      matchedTerms = fuzzyHits;
+    } else if (matchedPrefixes.length > 0) {
       via = "fuzzy";
     }
   }
-  // An AND match guarantees every rare term is present in the matched document
-  // by construction. When the body text isn't in hand (no snippet on some
-  // producers) we can still report them honestly.
-  if (matchedTerms.length === 0 && opts.matchType === "and" && rare.length > 0) {
-    matchedTerms = rare;
-  }
+  // Never fill missing terms from the lane: aliases are OR'd into the AND
+  // query, and a bounded snippet is not the complete matching document.
 
   // Which field the match landed in.
   let matchField: WhyMatched["matchField"];
@@ -303,15 +307,20 @@ function explainHit(opts: {
   const why: WhyMatched = {
     matchType: opts.matchType,
     matchedTerms,
+    evidenceScope: "returned-text",
+    ...(matchedAliases.length ? { matchedAliases } : {}),
+    ...(matchedPrefixes.length ? { matchedPrefixes } : {}),
     matchField,
     projectMatch,
     score: opts.score,
     ...(via ? { via } : {}),
   };
-  const termList = matchedTerms.length > 0 ? matchedTerms.join(", ") : "(expansion)";
+  const termList = matchedTerms.length > 0 ? matchedTerms.join(", ") : "none visible";
   const whyText =
-    `${opts.matchType.toUpperCase()} match on [${termList}] in ${matchField}` +
-    `${via ? ` via ${via}` : ""}; score ${opts.score.toFixed(2)}`;
+    `${opts.matchType.toUpperCase()} query lane; observed terms [${termList}] in ${matchField}` +
+    `${matchedAliases.length ? `; aliases [${matchedAliases.join(", ")}]` : ""}` +
+    `${matchedPrefixes.length ? `; prefixes [${matchedPrefixes.join(", ")}]` : ""}` +
+    `; returned-text evidence; score ${opts.score.toFixed(2)}`;
   return { why, whyText };
 }
 
@@ -430,18 +439,20 @@ export function findByTopicRanked(
   // MATCH, and re-looking-up a single rowid afterwards both returns the wrong
   // row and collapses to a full scan. Capping the arm is what makes computing
   // it here affordable.
+  // ORDER BY the FTS5 hidden rank column (default bm25), not the computed alias:
+  // this enables FTS5's ranked LIMIT path while retaining the same score order.
   const pool = Math.max(400, limit * 40);
   const sql = `
     WITH m AS (
       SELECT session_id AS sid, bm25(messages_fts) AS s, 'message' AS src,
              snippet(messages_fts, 2, '[', ']', '...', 12) AS snip
       FROM messages_fts WHERE messages_fts MATCH ?
-      ORDER BY s ASC LIMIT ${pool}
+      ORDER BY rank LIMIT ${pool}
     ),
     x AS (
       SELECT session_id AS sid, bm25(sessions_fts) * 2 AS s, 'session' AS src, NULL AS snip
       FROM sessions_fts WHERE sessions_fts MATCH ?
-      ORDER BY s ASC LIMIT ${pool}
+      ORDER BY rank LIMIT ${pool}
     ),
     combined AS (SELECT * FROM m UNION ALL SELECT * FROM x),
     ranked AS (

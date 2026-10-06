@@ -31,7 +31,7 @@ function ftsQuote(term: string): string {
 }
 
 // For a raw query, return FTS-ready alias terms triggered by synonym groups.
-// A group fires when any of its members appears as a substring of the query;
+// A group fires when a complete token/phrase appears in the query;
 // the group's OTHER members (not already present literally) become aliases.
 // Returns deduped, FTS-quoted strings ready to OR into a query. Empty when no
 // group matches — callers then build their query exactly as before.
@@ -39,7 +39,10 @@ export function aliasTerms(rawQuery: string): string[] {
   const q = rawQuery.toLowerCase();
   const out = new Set<string>();
   for (const { members } of NORMALIZED) {
-    const present = members.filter((m) => q.includes(m));
+    const present = members.filter((m) => {
+      const phrase = m.split(/\s+/).join("\\s+");
+      return new RegExp(`(?<![\\p{L}\\p{N}_])${phrase}(?![\\p{L}\\p{N}_])`, "u").test(q);
+    });
     if (present.length === 0) continue;
     for (const m of members) {
       if (present.includes(m)) continue; // already in the query literally
