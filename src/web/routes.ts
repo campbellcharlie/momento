@@ -194,8 +194,9 @@ export function handleRecent(_req: IncomingMessage, res: ServerResponse, ctx: Ro
   // intersected against sessions whose topEditedPaths contain it. The
   // bucket strings come from getRepoBreakdown so the value space matches.
   const repo = getQuery(url, "repo");
-  let rows = getRecent(ctx.db, n, projectPath || undefined);
-  if (client) rows = rows.filter((r) => r.client === client);
+  // client is filtered in SQL so `n` is applied after the client scope
+  // (post-filter used to under-return when Codex dominated the recent window).
+  let rows = getRecent(ctx.db, n, projectPath || undefined, client || undefined);
   if (category) {
     // Intersect with sessions that have at least one turn of the requested
     // category. Cheap subquery; turn_categories.category is indexed.

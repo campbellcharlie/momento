@@ -97,10 +97,10 @@ All tools return JSON. Sessions from `get_recent`, `get_project`, and `get_recen
 | Tool | Inputs | Returns |
 |---|---|---|
 | `search` | `query: string`, `limit?=20`, `project_path?` | `[{ sessionId, projectPath, summary, snippet, role, score }]` |
-| `get_project` | `project_path: string` | `Session[]` |
+| `get_project` | `project_path: string`, `client?` | `Session[]` (optional `client`: `claude_code` / `codex` / `gemini` / `halo` / `cursor`) |
 | `find_by_topic` | `description: string`, `limit?=10` | `Session[]` ranked by BM25 keyword overlap. **Not semantic** — synonyms won't match. |
 | `find_similar` | *(deprecated alias for `find_by_topic`)* | same as above |
-| `get_recent` | `n?=20`, `project_path?` | `Session[]` (modified desc) |
+| `get_recent` | `n?=20`, `project_path?`, `client?` | `Session[]` (modified desc; `client` filters in SQL before `LIMIT`) |
 | `files_touched` | `pattern: string` (SQL `LIKE`) | `[{ sessionId, filePath, operation, source, projectPath, summary }]` |
 | `get_recent_by_edited_path` | `path: string` (prefix), `n?=20` | `Session[]` whose **native** write/edit touches start with `path` |
 | `aggregate_ledger` | `module?`, `stack?` (filters) | Rollup **numbers** (not transcripts) over [ISE](https://github.com/campbellcharlie/ISE) task-closure ledgers: `idea_quality` (outcomes by persona × stack × class) + `harness_health`. |
@@ -118,6 +118,7 @@ All tools return JSON. Sessions from `get_recent`, `get_project`, and `get_recen
   "modified": "2026-05-08T07:28:13.268Z",
   "messageCount": 223,
   "jsonlPath": "/Users/you/.claude/projects/.../240abb0b-....jsonl",
+  "client": "claude_code",
   "topEditedPaths": ["/Users/you/src/myrepo", "/Users/you/src/momento"]
 }
 ```

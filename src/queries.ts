@@ -366,18 +366,32 @@ export function search(
   return hits;
 }
 
-export function getProject(db: DatabaseSync, projectPath: string): {
+export function getProject(
+  db: DatabaseSync,
+  projectPath: string,
+  client?: string,
+): {
   sessions: SessionRow[];
   toolCallCount: number;
   fileTouchCount: number;
 } {
-  const sessions = db
-    .prepare(
-      `SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
-              created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client, outcome
-       FROM sessions WHERE project_path = ? ORDER BY modified DESC`,
-    )
-    .all(projectPath) as unknown as SessionRow[];
+  const sessions = (
+    client
+      ? db
+          .prepare(
+            `SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
+                    created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client, outcome
+             FROM sessions WHERE project_path = ? AND client = ? ORDER BY modified DESC`,
+          )
+          .all(projectPath, client)
+      : db
+          .prepare(
+            `SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
+                    created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client, outcome
+             FROM sessions WHERE project_path = ? ORDER BY modified DESC`,
+          )
+          .all(projectPath)
+  ) as unknown as SessionRow[];
   const ids = sessions.map((s) => s.id);
   if (ids.length === 0) return { sessions, toolCallCount: 0, fileTouchCount: 0 };
   const placeholders = ids.map(() => "?").join(",");
@@ -614,18 +628,34 @@ export function findByTopicWithRecency(
   return sessions;
 }
 
-export function getRecent(db: DatabaseSync, n = 20, projectPath?: string): SessionRow[] {
+export function getRecent(
+  db: DatabaseSync,
+  n = 20,
+  projectPath?: string,
+  client?: string,
+): SessionRow[] {
+  // Filter in SQL (not post-LIMIT) so `n` means "n matching sessions" when
+  // scoped by client/project — otherwise a Codex-heavy index starves Cursor.
+  const where: string[] = [];
+  const params: Array<string | number> = [];
+  if (projectPath) {
+    where.push("project_path = ?");
+    params.push(projectPath);
+  }
+  if (client) {
+    where.push("client = ?");
+    params.push(client);
+  }
+  params.push(n);
   const sql = `
     SELECT id, project_path AS projectPath, summary, first_prompt AS firstPrompt,
            created, modified, git_branch AS gitBranch, message_count AS messageCount, jsonl_path AS jsonlPath, client, outcome
     FROM sessions
-    ${projectPath ? "WHERE project_path = ?" : ""}
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
     ORDER BY modified DESC
     LIMIT ?
   `;
-  const sessions = (
-    projectPath ? db.prepare(sql).all(projectPath, n) : db.prepare(sql).all(n)
-  ) as unknown as SessionRow[];
+  const sessions = db.prepare(sql).all(...params) as unknown as SessionRow[];
   attachTopEditedPaths(db, sessions);
   return sessions;
 }

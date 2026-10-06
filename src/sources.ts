@@ -18,6 +18,15 @@ import { loadJobSummaries } from "./jobs.js";
 
 export type ClientName = "claude_code" | "codex" | "gemini" | "halo" | "cursor";
 
+/** Canonical client names — keep MCP schemas / filters in sync with this list. */
+export const CLIENT_NAMES: readonly ClientName[] = [
+  "claude_code",
+  "codex",
+  "gemini",
+  "halo",
+  "cursor",
+] as const;
+
 export interface ParsedSessionWithMeta extends ParsedSession {
   // Optional metadata derived by the parser itself (set by Codex/Gemini, where
   // session id, cwd, and timestamps live inside the file). Claude Code reads

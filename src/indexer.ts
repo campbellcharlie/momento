@@ -4,7 +4,7 @@ import { stat } from "node:fs/promises";
 import { dirname, basename, extname, join } from "node:path";
 import { cleanFirstPrompt, IndexedSessionMeta } from "./parser.js";
 import { MomentoConfig, loadConfig, projectExcluded } from "./config.js";
-import { ClientName, Source, defaultSources } from "./sources.js";
+import { CLIENT_NAMES, ClientName, Source, defaultSources } from "./sources.js";
 import { buildTurns, classifyTurn } from "./classifier.js";
 import { detectOutcome } from "./outcome.js";
 import { indexLedgerInto, indexAuditInto, indexTimelineInto } from "./external.js";
@@ -483,4 +483,4 @@ export class Indexer {
 
 // Exported so callers can spin up the default 3-source set without importing
 // from sources.ts directly. Keeps server.ts and admin.ts coupled to indexer.ts.
-export { defaultSources, type Source, type ClientName };
+export { CLIENT_NAMES, defaultSources, type Source, type ClientName };

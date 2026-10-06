@@ -2,7 +2,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { Indexer, defaultSources } from "./indexer.js";
+import { Indexer, CLIENT_NAMES, defaultSources } from "./indexer.js";
 import { search, getProject, findByTopic, getRecent, filesTouched, getRecentByEditedPath, findByCategory, sessionCategoryBreakdown, findByTopicWithRecency } from "./queries.js";
 import { aggregateLedger } from "./ledger.js";
 import { searchLedger, searchAudit, searchTimeline, indexTimelineInto, indexExternalFast } from "./external.js";
@@ -139,10 +139,18 @@ const TOOLS = [
   },
   {
     name: "get_project",
-    description: "List all sessions for a project path with summaries and counts.",
+    description:
+      "List all sessions for a project path with summaries and counts. Optionally restrict to one coding-agent client.",
     inputSchema: {
       type: "object",
-      properties: { project_path: { type: "string" } },
+      properties: {
+        project_path: { type: "string" },
+        client: {
+          type: "string",
+          enum: [...CLIENT_NAMES],
+          description: "Optional: only sessions from this client (claude_code, codex, gemini, halo, cursor)",
+        },
+      },
       required: ["project_path"],
     },
   },
@@ -188,12 +196,18 @@ const TOOLS = [
   },
   {
     name: "get_recent",
-    description: "Most recently modified sessions, optionally scoped to a project.",
+    description:
+      "Most recently modified sessions, optionally scoped to a project and/or coding-agent client. Use client when you want Cursor-only / Codex-only / etc. history — without it, a large Codex corpus can dominate the recent list.",
     inputSchema: {
       type: "object",
       properties: {
         n: { type: "number", default: 20 },
         project_path: { type: "string" },
+        client: {
+          type: "string",
+          enum: [...CLIENT_NAMES],
+          description: "Optional: only sessions from this client (claude_code, codex, gemini, halo, cursor)",
+        },
       },
     },
   },
@@ -330,18 +344,20 @@ const TOOLS = [
 ];
 
 const INSTRUCTIONS = [
-  "momento indexes conversation history across THREE coding-agent CLIs: Claude Code (~/.claude/projects/), Codex (~/.codex/sessions/), and Gemini (~/.gemini/tmp/). Every session row carries a `client` field naming its source.",
+  "momento indexes conversation history across coding-agent CLIs: Claude Code (~/.claude/projects/), Codex (~/.codex/sessions/), Gemini (~/.gemini/tmp/), Halo, and Cursor / cursor-agent (~/.cursor/projects/*/agent-transcripts/). Every session row carries a `client` field naming its source.",
   "",
   "SEARCH STRATEGY (read this — it changes how you should query):",
   "- search and find_by_topic are KEYWORD-ONLY (FTS5 + BM25). They do NOT understand synonyms or paraphrases. A query for 'bug bounty' will not match a session that says 'VRP submission' even though they mean the same thing.",
   "- Prefer UNIQUE, RARE vocabulary (project codenames like G-HUNT-AUTO-26-UNAUTH, target hostnames, error strings, library names) over broad terms ('testing', 'bug', 'review'). Rare terms rank higher and surface the right session faster.",
   "- If first search misses, drop project_path filters and retry with rarer terms. Try the user's own words AND domain-specific words (e.g., search 'stitch' AND 'vrp' AND 'unauthenticated', not just 'google bug bounty').",
   "- When the user references a topic in vague terms, run 2-3 searches with different keyword angles before concluding the data isn't there.",
+  "- To list sessions from one agent only, pass `client` to get_recent / get_project (e.g. client='cursor'). Do not rely on keyword search for 'cursor' — that matches content mentioning Cursor, not Cursor-client rows.",
   "",
   "PROJECT/PATH SEMANTICS:",
   "- For Claude Code: project_path = launch dir (encoded), not necessarily the edit target. Use files_touched or get_recent_by_edited_path to find sessions that edited a specific repo.",
   "- For Codex: project_path = the cwd from session_meta (real filesystem path).",
   "- For Gemini: project_path = the registered project path (resolved from projectHash via ~/.gemini/projects.json), or the raw hash if unregistered. Gemini file activity (write_file/replace/read_file → native; run_shell_command redirects → inferred) is now extracted from each message's toolCalls array; pre-fix sessions need `momento --rebuild` to backfill.",
+  "- For Cursor: project_path is the workspace path when known (trust file / shell cwd), else the encoded ~/.cursor/projects/... dir.",
   "- Sessions returned by get_recent and get_project include topEditedPaths: the top 5 repo directories under MOMENTO_SRC_ROOTS (defaults to ~/src) where the session actually wrote/edited files.",
   "",
   "KNOWN GAPS (so you don't over-trust negative results):",
@@ -369,7 +385,11 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         projectPath: typeof args.project_path === "string" ? args.project_path : undefined,
       });
     case "get_project":
-      return getProject(indexer.db, String(args.project_path ?? ""));
+      return getProject(
+        indexer.db,
+        String(args.project_path ?? ""),
+        typeof args.client === "string" ? args.client : undefined,
+      );
     case "find_by_topic":
     case "find_similar": // deprecated alias — same dispatch
       return findByTopic(
@@ -388,6 +408,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         indexer.db,
         typeof args.n === "number" ? args.n : 20,
         typeof args.project_path === "string" ? args.project_path : undefined,
+        typeof args.client === "string" ? args.client : undefined,
       );
     case "files_touched":
       return filesTouched(indexer.db, String(args.pattern ?? ""));

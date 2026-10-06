@@ -13,7 +13,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Indexer, defaultSources } from "../dist/indexer.js";
 import { loadConfig } from "../dist/config.js";
-import { search, findByTopic, findByTopicWithRecency, findSimilar, getRecent, filesTouched } from "../dist/queries.js";
+import { search, findByTopic, findByTopicWithRecency, findSimilar, getRecent, getProject, filesTouched } from "../dist/queries.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, "fixtures");
@@ -96,6 +96,60 @@ test(".momentoignore drives both project and path excludes", async () => {
   try {
     const recent = getRecent(fx.indexer.db, 50);
     assert.ok(!recent.some((s) => s.id === "sess-secrets"));
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("getRecent and getProject filter by client in SQL before LIMIT", async () => {
+  const fx = await buildOnce();
+  try {
+    const baseline = getRecent(fx.indexer.db, 50);
+    assert.ok(baseline.some((s) => s.id === "sess-basic"));
+    const projectPath = baseline.find((s) => s.id === "sess-basic").projectPath;
+
+    // Insert a newer Codex session under the same project so unfiltered
+    // recent would prefer it, then prove client=claude_code still returns
+    // the Claude row when n=1.
+    fx.indexer.db
+      .prepare(
+        `INSERT INTO sessions
+           (id, project_path, summary, first_prompt, created, modified, git_branch, message_count, jsonl_path, client, outcome)
+         VALUES
+           ('sess-codex-new', ?, NULL, 'codex twin', '2026-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z',
+            NULL, 1, '/tmp/sess-codex-new.jsonl', 'codex', NULL)`,
+      )
+      .run(projectPath);
+
+    const claude = getRecent(fx.indexer.db, 50, undefined, "claude_code");
+    assert.ok(claude.length >= 1);
+    assert.ok(claude.every((s) => s.client === "claude_code"));
+    assert.ok(claude.some((s) => s.id === "sess-basic"));
+    assert.ok(!claude.some((s) => s.id === "sess-codex-new"));
+
+    const codex = getRecent(fx.indexer.db, 50, undefined, "codex");
+    assert.deepEqual(
+      codex.map((s) => s.id),
+      ["sess-codex-new"],
+    );
+
+    // n applies after the client filter — newest overall is Codex, but
+    // client=claude_code + n=1 must still yield a Claude session.
+    const topClaude = getRecent(fx.indexer.db, 1, undefined, "claude_code");
+    assert.equal(topClaude.length, 1);
+    assert.equal(topClaude[0].client, "claude_code");
+
+    const none = getRecent(fx.indexer.db, 20, undefined, "cursor");
+    assert.equal(none.length, 0);
+
+    const projCodex = getProject(fx.indexer.db, projectPath, "codex");
+    assert.deepEqual(
+      projCodex.sessions.map((s) => s.id),
+      ["sess-codex-new"],
+    );
+    const projClaude = getProject(fx.indexer.db, projectPath, "claude_code");
+    assert.ok(projClaude.sessions.every((s) => s.client === "claude_code"));
+    assert.ok(projClaude.sessions.some((s) => s.id === "sess-basic"));
   } finally {
     fx.cleanup();
   }
