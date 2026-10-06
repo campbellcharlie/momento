@@ -5,6 +5,8 @@ import { join, basename } from "node:path";
 import { appendFileSync, existsSync, realpathSync } from "node:fs";
 import {
   findByTopicRanked,
+  getRecent,
+  getRecentByEditedPath,
   sessionCategoryBreakdown,
   type MatchType,
   type SessionRow,
@@ -14,13 +16,13 @@ const DB_PATH = join(homedir(), ".momento", "index.db");
 // Guards the stdin wait only: if the harness never sends a payload, exit
 // quietly instead of hanging. It cannot guard the database phase — node:sqlite
 // is synchronous and Node exposes no statement interrupt, so a timer callback
-// cannot run while a query is executing. That phase is bounded by BUDGET_MS
-// checks between statements instead.
+// cannot run while a query is executing. BUDGET_MS checks only skip optional
+// work between statements. The configured run-hook.py supervisor enforces the
+// process deadline; direct CLI invocations do not have a hard database deadline.
 const STDIN_TIMEOUT_MS = 200;
 // Total wall-clock the hook allows itself before it stops doing optional
-// per-hit refinement and emits what it already has. Claude Code kills a
-// UserPromptSubmit hook at 5s and DISCARDS its output, so an overrun costs the
-// whole injection — finishing early with a coarser ranking is strictly better.
+// per-hit refinement and emits what it already has. The external hook timeout
+// must exceed the supervisor's deadline, so timeout failures are reported.
 const parsedBudget = Number(process.env.MOMENTO_INJECT_BUDGET_MS ?? "1500");
 const BUDGET_MS = Number.isFinite(parsedBudget) ? Math.max(0, parsedBudget) : 1500;
 const startedAt = Date.now();
@@ -72,6 +74,9 @@ const SNIPPET_PREFIX_STRIP = [
   /<environment_context>[\s\S]*?<\/environment_context>\s*/gi,
   // System reminders injected by various clients.
   /<system-reminder>[\s\S]*?<\/system-reminder>\s*/gi,
+  // Cursor / cursor-agent wrappers.
+  /<timestamp>[\s\S]*?<\/timestamp>\s*/gi,
+  /<\/?user_query>\s*/gi,
 ];
 const STOPWORDS = new Set([
   "a", "an", "and", "are", "at", "be", "but", "by", "for", "from", "get", "give",
@@ -414,16 +419,39 @@ async function main(): Promise<void> {
   let prompt = raw;
   let payloadField = "plain";
   let currentSessionId: string | null = null;
+  let cursorMode = /^(1|true|yes|cursor)$/i.test(process.env.MOMENTO_INJECT_FORMAT ?? "");
+  let cursorSessionStart = false;
   try {
     const j = JSON.parse(raw);
     if (j && typeof j === "object") {
-      const o = j as { prompt?: unknown; user_prompt?: unknown; session_id?: unknown };
+      const o = j as {
+        prompt?: unknown;
+        user_prompt?: unknown;
+        session_id?: unknown;
+        composer_mode?: unknown;
+        is_background_agent?: unknown;
+        attachments?: unknown;
+      };
+      // Cursor hooks: sessionStart has composer_mode / is_background_agent;
+      // beforeSubmitPrompt carries `prompt` + optional `attachments`.
+      if (
+        "composer_mode" in o ||
+        "is_background_agent" in o ||
+        Array.isArray(o.attachments)
+      ) {
+        cursorMode = true;
+      }
       if (typeof o.user_prompt === "string") {
         prompt = o.user_prompt;
         payloadField = "user_prompt";
       } else if (typeof o.prompt === "string") {
         prompt = o.prompt;
         payloadField = "prompt";
+      } else if (cursorMode && ("composer_mode" in o || "is_background_agent" in o)) {
+        // sessionStart — no user prompt yet; inject recent same-repo sessions.
+        cursorSessionStart = true;
+        prompt = "";
+        payloadField = "cursor_session_start";
       }
       if (typeof o.session_id === "string" && o.session_id) {
         currentSessionId = o.session_id;
@@ -432,8 +460,67 @@ async function main(): Promise<void> {
   } catch {
     /* plain string */
   }
+
+  const emit = (text: string | null): void => {
+    if (cursorMode) {
+      const out: Record<string, unknown> = { continue: true };
+      if (text) out.additional_context = text;
+      process.stdout.write(JSON.stringify(out) + "\n");
+      return;
+    }
+    if (text) process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+  };
+
+  const formatHits = (hits: SessionRow[], db: DatabaseSync): string => {
+    const lines: string[] = ["<!-- momento: relevant past sessions -->"];
+    for (const h of hits) {
+      const name = displayNameForHit(h);
+      const date = (h.modified ?? "").slice(0, 10);
+      const rawSummary =
+        (h.summary && h.summary.trim()) ||
+        (h.firstPrompt && h.firstPrompt.trim()) ||
+        (outOfBudget() ? null : deriveSnippet(db, h.id)) ||
+        "(no summary)";
+      const summary = rawSummary.replace(/\s+/g, " ").slice(0, 120);
+      const mark =
+        h.outcome === "success" ? "✓ " :
+        h.outcome === "failure" ? "✗ " :
+        h.outcome === "mixed" ? "~ " : "";
+      lines.push(`- [${name}] ${mark}${summary} (${date}) - ${h.id}`);
+    }
+    return lines.join("\n");
+  };
+
+  if (cursorSessionStart) {
+    const db = new DatabaseSync(DB_PATH, { readOnly: true });
+    db.exec("PRAGMA busy_timeout = 50");
+    try {
+      const anchor = currentRepo ?? cwd;
+      let hits = getRecentByEditedPath(db, anchor, MAX_SELECTED_HITS + 2);
+      if (hits.length === 0) hits = getRecent(db, MAX_SELECTED_HITS, anchor);
+      if (currentSessionId) hits = hits.filter((h) => h.id !== currentSessionId);
+      hits = hits.slice(0, MAX_SELECTED_HITS);
+      debugLog({
+        event: "cursor_session_start",
+        cwd,
+        currentRepo,
+        currentSessionId,
+        hitIds: hits.map((h) => h.id),
+      });
+      if (hits.length === 0) {
+        emit(null);
+        return;
+      }
+      emit(formatHits(hits, db));
+    } finally {
+      db.close();
+    }
+    return;
+  }
+
   if (!prompt) {
     debugLog({ event: "skip", reason: "empty_prompt", payloadField, cwd, currentRepo });
+    if (cursorMode) emit(null);
     return;
   }
   const preflight = preflightDecision(prompt);
@@ -450,6 +537,7 @@ async function main(): Promise<void> {
       cwd,
       currentRepo,
     });
+    if (cursorMode) emit(null);
     return;
   }
   const tokens = meaningfulTokens(prompt);
@@ -529,33 +617,18 @@ async function main(): Promise<void> {
         breakdown: r.breakdown,
       })),
     });
-    if (!decision.inject) return;
+    if (!decision.inject) {
+      if (cursorMode) emit(null);
+      return;
+    }
     // The no-repo term filter above can empty the set — skip rather than emit a
     // header with nothing under it.
     if (selectedHits.length === 0) {
       debugLog({ event: "skip", reason: "no_repo_weak_match", selectionReason: selected.selectionReason, cwd, currentRepo: selected.currentRepo });
+      if (cursorMode) emit(null);
       return;
     }
-    const lines: string[] = ["<!-- momento: relevant past sessions -->"];
-    for (const h of selectedHits) {
-      const name = displayNameForHit(h);
-      const date = (h.modified ?? "").slice(0, 10);
-      const rawSummary =
-        (h.summary && h.summary.trim()) ||
-        (h.firstPrompt && h.firstPrompt.trim()) ||
-        (outOfBudget() ? null : deriveSnippet(db, h.id)) ||
-        "(no summary)";
-      const summary = rawSummary.replace(/\s+/g, " ").slice(0, 120);
-      // Outcome marker tells the agent whether this precedent actually worked,
-      // so a "✗" session reads as a what-not-to-repeat rather than a model to
-      // follow. Empty when unknown (null) — no marker, line is unchanged.
-      const mark =
-        h.outcome === "success" ? "✓ " :
-        h.outcome === "failure" ? "✗ " :
-        h.outcome === "mixed" ? "~ " : "";
-      lines.push(`- [${name}] ${mark}${summary} (${date}) - ${h.id}`);
-    }
-    process.stdout.write(lines.join("\n") + "\n");
+    emit(formatHits(selectedHits, db));
   } finally {
     db.close();
   }
@@ -573,7 +646,8 @@ main()
       event: "error",
       message: err instanceof Error ? err.message : String(err),
     });
-    /* never block the user */
+    console.error("Momento recall failed; use the MCP search for explicit recall.");
+    process.exitCode = 1; // the advisory hook runner reports this without blocking prompts
   })
   .finally(() => {
     clearTimeout(timer);

@@ -16,6 +16,7 @@ import {
   resetGeminiProjectMap,
   GEMINI_FILE_TOOL_OP,
 } from "../dist/gemini.js";
+import { parseCursorSession, CURSOR_FILE_TOOL_OP } from "../dist/cursor.js";
 import { loadConfig } from "../dist/config.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -90,6 +91,35 @@ test("conformance — Gemini parser normalized output (incl. toolCalls)", async 
   }
 });
 
+test("conformance — Cursor parser normalized output", async () => {
+  const home = mkdtempSync(join(tmpdir(), "momento-conf-cursor-"));
+  const projectDir = join(home, ".cursor", "projects", "Users-me-src-repo-x");
+  const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const sessionDir = join(projectDir, "agent-transcripts", sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  const jsonlPath = join(sessionDir, `${sessionId}.jsonl`);
+  writeFileSync(jsonlPath, readFileSync(join(FIX, "cursor-transcript.jsonl")));
+  writeFileSync(
+    join(projectDir, ".workspace-trusted"),
+    JSON.stringify({ workspacePath: "/Users/me/src/repo-x" }),
+  );
+  try {
+    const parsed = await parseCursorSession(jsonlPath, CFG);
+    assert.deepEqual(normalize(parsed), {
+      roles: ["user", "assistant"],
+      tools: ["Read", "Shell", "StrReplace", "Write"],
+      touches: [
+        ["api.ts", "edit", "native"],
+        ["api.ts", "read", "native"],
+        ["generated.ts", "write", "inferred"],
+        ["out.ts", "write", "native"],
+      ],
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // Drift sentinel: the exact set of tool names each parser treats as native
 // file-ops. If an upstream CLI renames a tool (e.g. Codex drops `apply_patch`),
 // this fails loudly rather than silently missing file activity.
@@ -111,5 +141,13 @@ test("drift sentinel — recognized native file-op tool names are stable", () =>
     "read_file",
     "replace",
     "write_file",
+  ]);
+  assert.deepEqual(Object.keys(CURSOR_FILE_TOOL_OP).sort(), [
+    "Delete",
+    "Edit",
+    "MultiEdit",
+    "Read",
+    "StrReplace",
+    "Write",
   ]);
 });

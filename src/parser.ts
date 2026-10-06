@@ -52,6 +52,10 @@ export const FILE_TOOL_OP: Record<string, "read" | "write" | "edit"> = {
 const PREFIX_PATTERNS: RegExp[] = [
   /^<local-command-caveat>[\s\S]*?<\/local-command-caveat>\s*/i,
   /^<command-(name|message|args)>[\s\S]*?<\/command-\1>\s*/gi,
+  // Cursor / cursor-agent wrap user text in <timestamp> + <user_query>.
+  /^<timestamp>[\s\S]*?<\/timestamp>\s*/i,
+  /^<user_query>\s*/i,
+  /\s*<\/user_query>\s*$/i,
   /^PREVIOUS AI RESPONSE \([^)]*\):\s*/i,
   /^RECENT CONVERSATION:\s*/i,
   /^CONTEXT:\s*/i,

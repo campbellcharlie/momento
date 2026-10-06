@@ -7,7 +7,7 @@
 ![mission](https://img.shields.io/badge/mission-recall_past_agent_sessions-7d3cff)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![runtime](https://img.shields.io/badge/runtime-Node_24+-black)
-![indexes](https://img.shields.io/badge/indexes-Claude_Code·Codex·Gemini-blue)
+![indexes](https://img.shields.io/badge/indexes-Claude_Code·Codex·Gemini·Cursor-blue)
 ![exposes](https://img.shields.io/badge/exposes-MCP_server-orange)
 
 [What & Why](#what--why) · [Philosophy](#philosophy) · [Measurement](#measurement) · [Quickstart](#quickstart) · [Tools](#tools) · [Privacy](#privacy) · [Layout](#layout)
@@ -22,9 +22,9 @@ Coding-agent CLIs keep useful local history — but it's siloed by client, machi
 
 - Which session actually edited *this* repo?
 - What did I call that workaround last week?
-- Did that happen in Claude Code, Codex, or Gemini?
+- Did that happen in Claude Code, Codex, Gemini, or Cursor?
 
-**momento** unifies it. It indexes local transcripts from **Claude Code, Codex, and Gemini** into one searchable SQLite index, records the files each session actually *touched*, and lets the next session query all of it on demand.
+**momento** unifies it. It indexes local transcripts from **Claude Code, Codex, Gemini, and Cursor / cursor-agent** into one searchable SQLite index, records the files each session actually *touched*, and lets the next session query all of it on demand.
 
 ```text
 > the user asks: "what was that flag for the API rate-limit hack?"
@@ -37,7 +37,7 @@ Two pieces:
 1. **MCP server** — `search`, `find_by_topic`, `get_recent_by_edited_path`, and more (see [Tools](#tools)). Any MCP client queries the shared index on demand.
 2. **`momento-inject` CLI** — a one-line `UserPromptSubmit` hook that auto-injects relevant past sessions into every new prompt. Hard-capped at 200 ms, conservative by design.
 
-Coverage is whatever each client retained on disk — clear `~/.claude/projects/`, `~/.codex/sessions/`, or `~/.gemini/tmp` and those sessions aren't recoverable there. Two prod deps (`chokidar`, `zod`), no native bindings, Node 24+ built-in `node:sqlite`.
+Coverage is whatever each client retained on disk — clear `~/.claude/projects/`, `~/.codex/sessions/`, `~/.gemini/tmp`, or `~/.cursor/projects/*/agent-transcripts/` and those sessions aren't recoverable there. Two prod deps (`chokidar`, `zod`), no native bindings, Node 24+ built-in `node:sqlite`.
 
 ## Philosophy
 
@@ -65,10 +65,11 @@ cd ~/src/momento
 npm install && npm run build
 npm link                 # optional: exposes `momento` + `momento-inject` globally
 
-./bin/momento-install    # idempotently merge the MCP server + auto-inject hook into ~/.claude/settings.json
+./bin/momento-install            # Claude Code: MCP + UserPromptSubmit hook
+./bin/momento-install --cursor   # Cursor / cursor-agent: MCP + sessionStart hook
 ```
 
-`momento-install` dedupes by command-string, preserves your existing `mcpServers`/`hooks`, writes a `.bak`, and records install metadata under `~/.claude/state/`. Flags: `--no-hook` (MCP only), `--no-mcp` (hook only), `--dry-run` (print the planned settings without writing).
+`momento-install` dedupes by command-string, preserves your existing `mcpServers`/`hooks`, writes a `.bak`, and records install metadata. Flags: `--cursor` (Cursor / cursor-agent), `--claude` (default), `--no-hook`, `--no-mcp`, `--dry-run`. For Cursor, a direct `momento` MCP entry is skipped when `marshal` is already configured (marshal already fronts momento).
 
 <details>
 <summary><strong>Manual config (any MCP client)</strong></summary>

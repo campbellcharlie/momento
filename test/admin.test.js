@@ -59,10 +59,11 @@ function makePaths() {
       dbPath: join(work, "index.db"),
       projectsRoot,
       ignoreFile: join(work, ".momentoignore"),
-      // Isolate from real ~/.codex / ~/.gemini / ~/.halo history during tests.
+      // Isolate from real ~/.codex / ~/.gemini / ~/.halo / ~/.cursor history during tests.
       codexRoot: join(work, "no-codex"),
       geminiRoot: join(work, "no-gemini"),
       haloRoot: join(work, "no-halo"),
+      cursorRoot: join(work, "no-cursor"),
     },
   };
 }
@@ -111,6 +112,7 @@ test("runDoctor returns non-zero when projects root is missing", () => {
       ignoreFile: join(work, ".momentoignore"),
       codexRoot: join(work, "no-codex"),
       geminiRoot: join(work, "no-gemini"),
+      cursorRoot: join(work, "no-cursor"),
     };
     const { value, out } = captureStdout(() => runDoctor(paths));
     assert.equal(value, 2, `expected fail exit, got ${value}: ${out}`);

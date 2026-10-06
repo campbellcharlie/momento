@@ -79,11 +79,13 @@ const URL_PATTERN = /https?:\/\/\S+/i;
 const EDIT_TOOLS = new Set([
   "Edit", "Write", "FileEditTool", "FileWriteTool", "NotebookEdit", "cursor:edit",
   "MultiEdit",
+  // Cursor / cursor-agent
+  "StrReplace", "Delete",
 ]);
 const READ_TOOLS = new Set([
   "Read", "Grep", "Glob", "FileReadTool", "GrepTool", "GlobTool",
 ]);
-const BASH_TOOLS = new Set(["Bash", "BashTool", "PowerShellTool"]);
+const BASH_TOOLS = new Set(["Bash", "BashTool", "PowerShellTool", "Shell", "AwaitShell"]);
 const TASK_TOOLS = new Set([
   "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop",
   "TodoWrite",

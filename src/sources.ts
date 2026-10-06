@@ -13,9 +13,10 @@ import type { SessionRef, ParsedSession, IndexedSessionMeta } from "./parser.js"
 import { iterateSessions, parseSession, readSessionsIndex } from "./parser.js";
 import { iterateCodexSessions, parseCodexSession } from "./codex.js";
 import { iterateGeminiSessions, parseGeminiSession } from "./gemini.js";
+import { iterateCursorSessions, parseCursorSession } from "./cursor.js";
 import { loadJobSummaries } from "./jobs.js";
 
-export type ClientName = "claude_code" | "codex" | "gemini" | "halo";
+export type ClientName = "claude_code" | "codex" | "gemini" | "halo" | "cursor";
 
 export interface ParsedSessionWithMeta extends ParsedSession {
   // Optional metadata derived by the parser itself (set by Codex/Gemini, where
@@ -85,6 +86,15 @@ export function defaultSources(home: string = homedir()): Source[] {
       fileExt: ".json",
       iterate: iterateGeminiSessions,
       parse: parseGeminiSession,
+    },
+    {
+      // Cursor IDE and cursor-agent (CLI) share ~/.cursor/projects/<encoded>/
+      // agent-transcripts/<uuid>/<uuid>.jsonl. One source covers both clients.
+      client: "cursor",
+      root: join(home, ".cursor", "projects"),
+      fileExt: ".jsonl",
+      iterate: iterateCursorSessions,
+      parse: parseCursorSession,
     },
   ];
 }
